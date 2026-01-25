@@ -1,0 +1,17 @@
+import type { MapHackConversationId } from "../value/MapHackConversationId";
+import type { MapHackMessageRefId } from "../value/MapHackMessageRefId";
+import type { MessageRole } from "./Message";
+
+export interface MessageRef {
+  id: MapHackMessageRefId;
+  conversationId: MapHackConversationId;
+  role: MessageRole;
+  preview: string;
+  timestamp: string;
+  platform: string;
+  conversationUrl: string;
+  metadata: {
+    originalId: string;
+    turnIndex: number;
+  };
+}
