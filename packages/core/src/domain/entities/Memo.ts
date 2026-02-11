@@ -8,7 +8,7 @@ export interface Memo {
   conversationId: MapHackConversationId;
   messageId: MapHackMessageId;
   content: string;
-  timestamp: number;
+  timestamp: number | null;
   turnIndex: number;
   messagePreview: string;
   messageRole: MessageRole;

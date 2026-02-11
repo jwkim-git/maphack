@@ -7,7 +7,7 @@ export interface MessageRef {
   conversationId: MapHackConversationId;
   role: MessageRole;
   preview: string;
-  timestamp: string;
+  timestamp: number | null;
   platform: string;
   conversationUrl: string;
   metadata: {

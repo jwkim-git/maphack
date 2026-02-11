@@ -7,7 +7,7 @@ export interface Bookmark {
   id: MapHackBookmarkId;
   conversationId: MapHackConversationId;
   messageId: MapHackMessageId;
-  timestamp: number;
+  timestamp: number | null;
   turnIndex: number;
   messagePreview: string;
   messageRole: MessageRole;

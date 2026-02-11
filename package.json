@@ -1,0 +1,13 @@
+{
+  "name": "maphack",
+  "private": true,
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:behavior": "tsx --test packages/core/src/application/usecases/__tests__/*.behavior.ts",
+    "test:all": "npm run typecheck && npm run test:behavior"
+  }
+}

@@ -8,7 +8,7 @@ export interface Tag {
   conversationId: MapHackConversationId;
   messageId: MapHackMessageId;
   tagName: string;
-  timestamp: number;
+  timestamp: number | null;
   turnIndex: number;
   messagePreview: string;
   messageRole: MessageRole;

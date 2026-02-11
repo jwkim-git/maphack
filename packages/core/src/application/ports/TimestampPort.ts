@@ -3,7 +3,7 @@ import type { MapHackMessageId } from "../../domain/value/MapHackMessageId";
 
 export interface TimestampMapping {
   messageId: MapHackMessageId;
-  timestamp: string;
+  timestamp: number | null;
 }
 
 export interface TimestampPort {
