@@ -1,7 +1,9 @@
 import type { MapHackConversationId } from "../value/MapHackConversationId";
 import type { MapHackMessageId } from "../value/MapHackMessageId";
+import type { MessageRole } from "./MessageRole";
 
-export type MessageRole = "user" | "assistant";
+// Reserved for future full-text/search phase.
+// Message is not part of the current Phase 1 SourceData transport/storage path.
 
 export interface Message {
   id: MapHackMessageId;

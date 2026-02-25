@@ -1,7 +1,7 @@
 import type { MapHackTagId } from "../value/MapHackTagId";
 import type { MapHackConversationId } from "../value/MapHackConversationId";
 import type { MapHackMessageId } from "../value/MapHackMessageId";
-import type { MessageRole } from "./Message";
+import type { MessageRole } from "./MessageRole";
 
 export interface Tag {
   id: MapHackTagId;

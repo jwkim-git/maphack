@@ -1,7 +1,7 @@
 import type { MapHackBookmarkId } from "../value/MapHackBookmarkId";
 import type { MapHackConversationId } from "../value/MapHackConversationId";
 import type { MapHackMessageId } from "../value/MapHackMessageId";
-import type { MessageRole } from "./Message";
+import type { MessageRole } from "./MessageRole";
 
 export interface Bookmark {
   id: MapHackBookmarkId;
