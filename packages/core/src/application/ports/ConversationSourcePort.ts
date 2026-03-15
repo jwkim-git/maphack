@@ -9,7 +9,10 @@ export interface ConversationSource {
   messageRefs: MessageRef[];
 }
 
+export type CaptureMode = "snapshot" | "delta";
+
 export interface ConversationSourcePort {
-  upsert(source: ConversationSource): Promise<void>;
+  upsert(source: ConversationSource, captureMode: CaptureMode): Promise<void>;
+  hasConversationSource(conversationId: MapHackConversationId): Promise<boolean>;
   listByConversationId(conversationId: MapHackConversationId): Promise<MessageRef[]>;
 }

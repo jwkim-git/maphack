@@ -2,12 +2,23 @@
   "name": "maphack",
   "private": true,
   "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.27.3",
+    "playwright": "^1.58.2",
     "tsx": "^4.21.0",
     "typescript": "^5.5.4"
   },
   "scripts": {
+    "build:extension": "node scripts/build-extension.mjs",
     "typecheck": "tsc --noEmit",
     "test:behavior": "tsx --test packages/core/src/application/usecases/__tests__/*.behavior.ts",
-    "test:all": "npm run typecheck && npm run test:behavior"
+    "test:behavior:extension": "npx tsx apps/extension/src/infra/messaging/__tests__/runtimeBridge.behavior.ts && npx tsx apps/extension/src/infra/providers/chatgpt/__tests__/domParser.behavior.ts && npx tsx apps/extension/src/infra/providers/chatgpt/__tests__/scrollNavigator.behavior.ts && npx tsx apps/extension/src/infra/providers/chatgpt/__tests__/fiberTimestampCollector.behavior.ts && npx tsx apps/extension/src/presentation/sidebar/__tests__/ViewModel.behavior.ts",
+    "test:all": "npm run typecheck && npm run test:behavior && npm run test:behavior:extension",
+    "verify:extension": "node scripts/verify-extension.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   }
 }

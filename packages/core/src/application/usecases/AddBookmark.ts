@@ -1,6 +1,6 @@
 import type { MessageRef } from "../../domain/entities/MessageRef";
+import type { Bookmark } from "../../domain/entities/Bookmark";
 import { createBookmarkFromMessageRef } from "../../domain/factories/createBookmarkFromMessageRef";
-import type { MessagingPort } from "../ports/MessagingPort";
 import type { UserDataBookmarkPort } from "../ports/UserDataBookmarkPort";
 
 export interface AddBookmarkCommand {
@@ -8,19 +8,13 @@ export interface AddBookmarkCommand {
 }
 
 export class AddBookmark {
-  constructor(
-    private readonly bookmarkPort: UserDataBookmarkPort,
-    private readonly messagingPort: MessagingPort
-  ) {}
+  constructor(private readonly bookmarkPort: UserDataBookmarkPort) {}
 
-  async execute(command: AddBookmarkCommand): Promise<void> {
+  async execute(command: AddBookmarkCommand): Promise<Bookmark> {
     const createdAtSeconds = Math.floor(Date.now() / 1000);
     const bookmark = createBookmarkFromMessageRef(command.messageRef, createdAtSeconds);
 
     await this.bookmarkPort.upsert(bookmark);
-    await this.messagingPort.publish({
-      type: "bookmark-added",
-      bookmark
-    });
+    return bookmark;
   }
 }

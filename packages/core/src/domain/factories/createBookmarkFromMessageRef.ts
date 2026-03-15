@@ -18,6 +18,7 @@ export function createBookmarkFromMessageRef(
     messageRole: messageRef.role,
     conversationUrl: messageRef.conversationUrl,
     platform: messageRef.platform,
-    createdAt: createdAtSeconds
+    createdAt: createdAtSeconds,
+    edited: false
   };
 }

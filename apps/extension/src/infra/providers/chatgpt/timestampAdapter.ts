@@ -1,5 +1,6 @@
 import { toUnixSecondsOrNull } from "../../../../../../packages/shared/src/utils/time/toUnixSecondsOrNull";
 import type {
+  TIMESTAMP_MESSAGE_SCHEMA,
   TIMESTAMP_PAYLOAD_SIGNATURE,
   TIMESTAMP_PAYLOAD_TYPE,
   TimestampPayloadItem,
@@ -7,6 +8,7 @@ import type {
   TimestampPayloadSource
 } from "../../messaging/timestampPayload";
 import {
+  TIMESTAMP_MESSAGE_SCHEMA as TIMESTAMP_MESSAGE_SCHEMA_VALUE,
   TIMESTAMP_PAYLOAD_SIGNATURE as TIMESTAMP_PAYLOAD_SIGNATURE_VALUE,
   TIMESTAMP_PAYLOAD_TYPE as TIMESTAMP_PAYLOAD_TYPE_VALUE
 } from "../../messaging/timestampPayload";
@@ -17,6 +19,7 @@ export interface TimestampSeed {
 }
 
 export interface BuildTimestampPayloadInput {
+  requestId: string;
   conversationId: string;
   source: TimestampPayloadSource;
   items: TimestampSeed[];
@@ -60,6 +63,8 @@ export function createTimestampPayloadMessage(
   return {
     type: TIMESTAMP_PAYLOAD_TYPE_VALUE as typeof TIMESTAMP_PAYLOAD_TYPE,
     signature: TIMESTAMP_PAYLOAD_SIGNATURE_VALUE as typeof TIMESTAMP_PAYLOAD_SIGNATURE,
+    schema: TIMESTAMP_MESSAGE_SCHEMA_VALUE as typeof TIMESTAMP_MESSAGE_SCHEMA,
+    requestId: input.requestId,
     conversationId: input.conversationId,
     source: input.source,
     payload

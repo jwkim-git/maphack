@@ -1,6 +1,7 @@
 import type {
   TimestampMapping
 } from "../../../../../packages/core/src/application/ports/TimestampPort";
+import type { Bookmark } from "../../../../../packages/core/src/domain/entities/Bookmark";
 import type {
   ConversationSource
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
@@ -9,6 +10,7 @@ import type { MapHackConversationId } from "../../../../../packages/core/src/dom
 import type { MapHackMessageId } from "../../../../../packages/core/src/domain/value/MapHackMessageId";
 import type {
   RuntimeConversationSource,
+  RuntimeBookmark,
   RuntimeMessageRef,
   RuntimeTimestampMapping
 } from "../../../../../packages/shared/src/types/runtimeMessages";
@@ -17,6 +19,22 @@ function toRuntimeMessageRef(ref: MessageRef): RuntimeMessageRef {
   return {
     id: ref.id,
     conversationId: ref.conversationId,
+    role: ref.role,
+    preview: ref.preview,
+    timestamp: ref.timestamp,
+    platform: ref.platform,
+    conversationUrl: ref.conversationUrl,
+    metadata: {
+      originalId: ref.metadata.originalId,
+      turnIndex: ref.metadata.turnIndex
+    }
+  };
+}
+
+export function toDomainMessageRef(ref: RuntimeMessageRef): MessageRef {
+  return {
+    id: ref.id as MessageRef["id"],
+    conversationId: ref.conversationId as MapHackConversationId,
     role: ref.role,
     preview: ref.preview,
     timestamp: ref.timestamp,
@@ -61,19 +79,7 @@ export function toDomainConversationSource(source: RuntimeConversationSource): C
         url: source.conversation.metadata.url
       }
     },
-    messageRefs: source.messageRefs.map((ref) => ({
-      id: ref.id as MessageRef["id"],
-      conversationId: ref.conversationId as MapHackConversationId,
-      role: ref.role,
-      preview: ref.preview,
-      timestamp: ref.timestamp,
-      platform: ref.platform,
-      conversationUrl: ref.conversationUrl,
-      metadata: {
-        originalId: ref.metadata.originalId,
-        turnIndex: ref.metadata.turnIndex
-      }
-    }))
+    messageRefs: source.messageRefs.map(toDomainMessageRef)
   };
 }
 
@@ -93,4 +99,24 @@ export function toDomainTimestampMappings(
     messageId: item.messageId as MapHackMessageId,
     timestamp: item.timestamp
   }));
+}
+
+export function toRuntimeBookmark(bookmark: Bookmark): RuntimeBookmark {
+  return {
+    id: bookmark.id,
+    conversationId: bookmark.conversationId,
+    messageId: bookmark.messageId,
+    timestamp: bookmark.timestamp,
+    turnIndex: bookmark.turnIndex,
+    messagePreview: bookmark.messagePreview,
+    messageRole: bookmark.messageRole,
+    conversationUrl: bookmark.conversationUrl,
+    platform: bookmark.platform,
+    createdAt: bookmark.createdAt,
+    edited: bookmark.edited
+  };
+}
+
+export function toRuntimeBookmarks(bookmarks: Bookmark[]): RuntimeBookmark[] {
+  return bookmarks.map(toRuntimeBookmark);
 }

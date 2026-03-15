@@ -5,5 +5,4 @@ export const CHATGPT_MESSAGE_CONTAINER_FALLBACKS = [
   "article[data-turn]"
 ] as const;
 
-export const CHATGPT_SCROLL_CONTAINER_PRIMARY = '[data-scroll-root="true"]';
-
+export const CHATGPT_SCROLL_CONTAINER_PRIMARY = "[data-scroll-root]";

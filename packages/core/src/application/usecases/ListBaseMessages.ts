@@ -6,15 +6,28 @@ export interface ListBaseMessagesCommand {
   conversationId: MapHackConversationId;
 }
 
-export interface ListBaseMessagesResult {
-  messageRefs: MessageRef[];
-}
+export type ListBaseMessagesResult =
+  | {
+      status: "available";
+      messageRefs: MessageRef[];
+    }
+  | {
+      status: "source-missing";
+    };
 
 export class ListBaseMessages {
   constructor(private readonly sourcePort: ConversationSourcePort) {}
 
   async execute(command: ListBaseMessagesCommand): Promise<ListBaseMessagesResult> {
+    const hasSource = await this.sourcePort.hasConversationSource(command.conversationId);
+    if (!hasSource) {
+      return { status: "source-missing" };
+    }
+
     const messageRefs = await this.sourcePort.listByConversationId(command.conversationId);
-    return { messageRefs };
+    return {
+      status: "available",
+      messageRefs
+    };
   }
 }

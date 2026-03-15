@@ -1,20 +1,14 @@
-import {
-  toTimestampPayloadMessage,
-  toTimestampPullRequestMessage
-} from "../../infra/messaging/postMessageBridge";
+import { toTimestampPayloadMessage, toTimestampPullRequestMessage } from "../../infra/messaging/postMessageBridge";
+import type { TimestampPayloadSource } from "../../infra/messaging/timestampPayload";
+import { collectFiberTimestampSeeds } from "../../infra/providers/chatgpt/fiberTimestampCollector";
 import { createTimestampPayloadMessage, type TimestampSeed } from "../../infra/providers/chatgpt/timestampAdapter";
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
-import type { TimestampPayloadSource } from "../../infra/messaging/timestampPayload";
 
 export type PostTimestampMessage = (message: unknown, targetOrigin: string) => void;
 
-export type PublishTimestampPayloadResult =
-  | "provider-unsupported"
-  | "payload-invalid"
-  | "sent";
-
 export interface PublishTimestampPayloadInput {
   hostname: string;
+  requestId: string;
   conversationId: string;
   source: TimestampPayloadSource;
   seeds: TimestampSeed[];
@@ -22,171 +16,78 @@ export interface PublishTimestampPayloadInput {
   postTimestampMessage: PostTimestampMessage;
 }
 
-function isValidTargetOriginForHostname(targetOrigin: string, hostname: string): boolean {
+const CHATGPT_CONVERSATION_PATH_PATTERN =
+  /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
+
+function resolveConversationId(pathname: string): string | null {
+  const match = pathname.match(CHATGPT_CONVERSATION_PATH_PATTERN);
+  return match ? `mh-conv-${match[1].toLowerCase()}` : null;
+}
+
+function isValidTargetOrigin(hostname: string, targetOrigin: string): boolean {
   try {
     const parsed = new URL(targetOrigin);
-    if (parsed.origin !== targetOrigin) {
-      return false;
-    }
-
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return false;
-    }
-
-    return parsed.hostname.toLowerCase() === hostname.trim().toLowerCase();
+    return parsed.origin === targetOrigin && ["http:", "https:"].includes(parsed.protocol) && parsed.hostname.toLowerCase() === hostname.trim().toLowerCase();
   } catch {
     return false;
   }
 }
 
-// Build and validate one timestamp payload, then post only valid messages.
-export function publishTimestampPayload(
-  input: PublishTimestampPayloadInput
-): PublishTimestampPayloadResult {
-  const providerId = resolveProviderIdByHostname(input.hostname);
-  if (providerId !== "chatgpt") {
-    return "provider-unsupported";
+function collectFiberSnapshot(request: {
+  conversationId: string;
+  messageIds: string[];
+}): { conversationId: string; source: TimestampPayloadSource; seeds: TimestampSeed[] } | null {
+  if (typeof window === "undefined") {
+    return null;
   }
 
-  if (!isValidTargetOriginForHostname(input.targetOrigin, input.hostname)) {
+  const activeConversationId = resolveConversationId(window.location.pathname);
+  if (activeConversationId !== null && activeConversationId !== request.conversationId) {
+    return null;
+  }
+
+  return { conversationId: request.conversationId, source: "fiber", seeds: collectFiberTimestampSeeds(request.messageIds) };
+}
+
+export function publishTimestampPayload(input: PublishTimestampPayloadInput): "provider-unsupported" | "payload-invalid" | "sent" {
+  if (resolveProviderIdByHostname(input.hostname) !== "chatgpt") {
+    return "provider-unsupported";
+  }
+  if (!isValidTargetOrigin(input.hostname, input.targetOrigin)) {
     return "payload-invalid";
   }
 
-  let builtPayload: ReturnType<typeof createTimestampPayloadMessage>;
   try {
-    builtPayload = createTimestampPayloadMessage({
+    const payload = createTimestampPayloadMessage({
+      requestId: input.requestId,
       conversationId: input.conversationId,
       source: input.source,
       items: input.seeds
     });
+    const validated = toTimestampPayloadMessage(payload);
+    if (validated === null) {
+      return "payload-invalid";
+    }
+
+    input.postTimestampMessage(validated, input.targetOrigin);
+    return "sent";
   } catch {
     return "payload-invalid";
   }
-
-  const validatedPayload = toTimestampPayloadMessage(builtPayload);
-  if (validatedPayload === null) {
-    return "payload-invalid";
-  }
-
-  input.postTimestampMessage(validatedPayload, input.targetOrigin);
-  return "sent";
 }
 
-type MainSeedSnapshot = {
-  conversationId: string;
-  source: TimestampPayloadSource;
-  seeds: TimestampSeed[];
-};
-
-type MainTimestampPullRequest = {
-  conversationId: string;
-  messageIds: string[];
-};
-
-export interface CollectMainTimestampSeeds {
-  (): MainSeedSnapshot | null;
-}
-
-export interface CollectMainTimestampSeedsByRequest {
-  (request: MainTimestampPullRequest): MainSeedSnapshot | null;
-}
-
-export interface TimestampMessageEventLike {
-  source: unknown;
-  origin: string;
-  data: unknown;
-}
-
-export interface RelayIsolatedTimestampRequestInput {
-  event: TimestampMessageEventLike;
+export function relayIsolatedTimestampRequest(input: {
+  event: { source: unknown; origin: string; data: unknown };
   currentWindow: unknown;
   currentOrigin: string;
   hostname: string;
-  collectSeedsByRequest: CollectMainTimestampSeedsByRequest;
+  collectSeedsByRequest: (request: {
+    conversationId: string;
+    messageIds: string[];
+  }) => { conversationId: string; source: TimestampPayloadSource; seeds: TimestampSeed[] } | null;
   postTimestampMessage: PostTimestampMessage;
-}
-
-export type RelayIsolatedTimestampRequestResult = "accepted" | "ignored";
-
-// Read one seed snapshot and delegate publishing with current page context.
-export function runMainTimestampCollection(
-  collectSeeds: CollectMainTimestampSeeds,
-  postTimestampMessage: PostTimestampMessage
-): PublishTimestampPayloadResult {
-  if (typeof window === "undefined") {
-    return "provider-unsupported";
-  }
-
-  const snapshot = collectSeeds();
-  if (snapshot === null) {
-    return "payload-invalid";
-  }
-
-  return publishTimestampPayload({
-    hostname: window.location.hostname,
-    conversationId: snapshot.conversationId,
-    source: snapshot.source,
-    seeds: snapshot.seeds,
-    targetOrigin: window.location.origin,
-    postTimestampMessage
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function resolveWindowTimestampRegistry(): Record<string, unknown> | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const globalWindow = window as unknown as {
-    __MAPHACK_TIMESTAMP_SEED_REGISTRY__?: unknown;
-  };
-
-  if (!isRecord(globalWindow.__MAPHACK_TIMESTAMP_SEED_REGISTRY__)) {
-    return null;
-  }
-
-  return globalWindow.__MAPHACK_TIMESTAMP_SEED_REGISTRY__;
-}
-
-function collectSeedsFromWindowRegistry(request: MainTimestampPullRequest): MainSeedSnapshot {
-  const registry = resolveWindowTimestampRegistry();
-
-  const seeds: TimestampSeed[] = request.messageIds.map((messageId) => {
-    const value = registry && Object.prototype.hasOwnProperty.call(registry, messageId)
-      ? registry[messageId]
-      : null;
-
-    return {
-      id: messageId,
-      createTime:
-        typeof value === "string" ||
-        typeof value === "number" ||
-        value === null ||
-        value === undefined
-          ? value
-          : null
-    };
-  });
-
-  return {
-    conversationId: request.conversationId,
-    source: "json",
-    seeds
-  };
-}
-
-export function relayIsolatedTimestampRequest(
-  input: RelayIsolatedTimestampRequestInput
-): RelayIsolatedTimestampRequestResult {
-  if (input.event.source !== input.currentWindow) {
-    return "ignored";
-  }
-
-  if (input.event.origin !== input.currentOrigin) {
+}): "accepted" | "ignored" {
+  if (input.event.source !== input.currentWindow || input.event.origin !== input.currentOrigin) {
     return "ignored";
   }
 
@@ -195,75 +96,39 @@ export function relayIsolatedTimestampRequest(
     return "ignored";
   }
 
-  const snapshot = input.collectSeedsByRequest({
-    conversationId: request.conversationId,
-    messageIds: request.messageIds
-  });
-
+  const snapshot = input.collectSeedsByRequest({ conversationId: request.conversationId, messageIds: request.messageIds });
   if (snapshot === null || snapshot.conversationId !== request.conversationId) {
     return "ignored";
   }
 
-  const result = publishTimestampPayload({
+  return publishTimestampPayload({
     hostname: input.hostname,
+    requestId: request.requestId,
     conversationId: snapshot.conversationId,
     source: snapshot.source,
     seeds: snapshot.seeds,
     targetOrigin: input.currentOrigin,
     postTimestampMessage: input.postTimestampMessage
-  });
-
-  return result === "sent" ? "accepted" : "ignored";
+  }) === "sent"
+    ? "accepted"
+    : "ignored";
 }
 
-function bindTimestampPullRequestListener(
-  collectSeedsByRequest: CollectMainTimestampSeedsByRequest,
-  postTimestampMessage: PostTimestampMessage
-): void {
-  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+export function bootstrapMainTimestampBridge(): void {
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function" || typeof window.postMessage !== "function") {
     return;
   }
 
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     relayIsolatedTimestampRequest({
-      event: {
-        source: event.source,
-        origin: event.origin,
-        data: event.data
-      },
+      event: { source: event.source, origin: event.origin, data: event.data },
       currentWindow: window,
       currentOrigin: window.location.origin,
       hostname: window.location.hostname,
-      collectSeedsByRequest,
-      postTimestampMessage
+      collectSeedsByRequest: collectFiberSnapshot,
+      postTimestampMessage: (message, targetOrigin) => window.postMessage(message, targetOrigin)
     });
   });
-}
-
-function resolveWindowPostTimestampMessage(): PostTimestampMessage | null {
-  if (typeof window === "undefined" || typeof window.postMessage !== "function") {
-    return null;
-  }
-
-  return (message: unknown, targetOrigin: string) => {
-    window.postMessage(message, targetOrigin);
-  };
-}
-
-export function bootstrapMainTimestampBridge(): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  const postTimestampMessage = resolveWindowPostTimestampMessage();
-  if (postTimestampMessage === null) {
-    return;
-  }
-
-  bindTimestampPullRequestListener(
-    (request) => collectSeedsFromWindowRegistry(request),
-    postTimestampMessage
-  );
 }
 
 void bootstrapMainTimestampBridge();

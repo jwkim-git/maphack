@@ -1,4 +1,5 @@
 import {
+  TIMESTAMP_MESSAGE_SCHEMA,
   TIMESTAMP_PAYLOAD_SIGNATURE,
   TIMESTAMP_PAYLOAD_TYPE,
   TIMESTAMP_PULL_REQUEST_SIGNATURE,
@@ -13,7 +14,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isTimestampPayloadSource(value: unknown): value is TimestampPayloadSource {
-  return value === "fiber" || value === "json" || value === "stream";
+  return value === "fiber";
 }
 
 function toTimestampPayloadItem(
@@ -72,6 +73,9 @@ export function toTimestampPayloadMessage(value: unknown): TimestampPayloadMessa
   if (
     value.type !== TIMESTAMP_PAYLOAD_TYPE ||
     value.signature !== TIMESTAMP_PAYLOAD_SIGNATURE ||
+    value.schema !== TIMESTAMP_MESSAGE_SCHEMA ||
+    typeof value.requestId !== "string" ||
+    value.requestId.length === 0 ||
     typeof value.conversationId !== "string" ||
     !isTimestampPayloadSource(value.source) ||
     !Array.isArray(value.payload)
@@ -91,6 +95,8 @@ export function toTimestampPayloadMessage(value: unknown): TimestampPayloadMessa
   return {
     type: TIMESTAMP_PAYLOAD_TYPE,
     signature: TIMESTAMP_PAYLOAD_SIGNATURE,
+    schema: TIMESTAMP_MESSAGE_SCHEMA,
+    requestId: value.requestId,
     conversationId: value.conversationId,
     source: value.source,
     payload
@@ -109,6 +115,9 @@ export function toTimestampPullRequestMessage(value: unknown): TimestampPullRequ
   if (
     value.type !== TIMESTAMP_PULL_REQUEST_TYPE ||
     value.signature !== TIMESTAMP_PULL_REQUEST_SIGNATURE ||
+    value.schema !== TIMESTAMP_MESSAGE_SCHEMA ||
+    typeof value.requestId !== "string" ||
+    value.requestId.length === 0 ||
     typeof value.conversationId !== "string"
   ) {
     return null;
@@ -122,6 +131,8 @@ export function toTimestampPullRequestMessage(value: unknown): TimestampPullRequ
   return {
     type: TIMESTAMP_PULL_REQUEST_TYPE,
     signature: TIMESTAMP_PULL_REQUEST_SIGNATURE,
+    schema: TIMESTAMP_MESSAGE_SCHEMA,
+    requestId: value.requestId,
     conversationId: value.conversationId,
     messageIds
   };

@@ -5,6 +5,7 @@
 
 # Test Artifacts
 **/__tests__/
+/output/
 
 # Dependencies
 /node_modules/

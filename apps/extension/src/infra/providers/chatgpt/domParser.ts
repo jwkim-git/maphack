@@ -1,18 +1,12 @@
 import type { ConversationSource } from "../../../../../../packages/core/src/application/ports/ConversationSourcePort";
-import {
-  CHATGPT_MESSAGE_CONTAINER_FALLBACKS,
-  CHATGPT_MESSAGE_CONTAINER_PRIMARY
-} from "./selectors";
+import type { ChatgptCaptureScope } from "./threadScope";
+import { parseChatgptTurnIndexFromElement } from "./turnIndex";
 
 export const CHATGPT_MESSAGE_REF_TIMESTAMP_DEFAULT = null;
 
 type ChatgptMessageRole = ConversationSource["messageRefs"][number]["role"];
 
 type ChatgptSourceDataCollectionStrategyContract = {
-  messageContainer: {
-    primary: string;
-    fallbacks: readonly string[];
-  };
   fields: {
     conversationId: {
       primarySource: "conversation-url";
@@ -27,11 +21,6 @@ type ChatgptSourceDataCollectionStrategyContract = {
       fallbackAttribute: "data-turn-id";
     };
     turnIndex: {
-      articleSelector: "article";
-      articleTestIdAttribute: "data-testid";
-      testIdPattern: RegExp;
-      descendantSelector: '[data-testid^="conversation-turn-"]';
-      descendantTestIdAttribute: "data-testid";
       fallbackPolicy: "node-list-index";
     };
     role: {
@@ -53,6 +42,9 @@ type ChatgptSourceDataCollectionStrategyContract = {
         fallbacks: readonly string[];
       };
     };
+    assistantGeneration: {
+      stopButtonSelector: 'button[data-testid="stop-button"]';
+    };
   };
   derived: {
     previewMaxLength: number;
@@ -63,10 +55,6 @@ type ChatgptSourceDataCollectionStrategyContract = {
 };
 
 export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
-  messageContainer: {
-    primary: CHATGPT_MESSAGE_CONTAINER_PRIMARY,
-    fallbacks: CHATGPT_MESSAGE_CONTAINER_FALLBACKS
-  },
   fields: {
     conversationId: {
       primarySource: "conversation-url",
@@ -82,11 +70,6 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
       fallbackAttribute: "data-turn-id"
     },
     turnIndex: {
-      articleSelector: "article",
-      articleTestIdAttribute: "data-testid",
-      testIdPattern: /conversation-turn-(\d+)/,
-      descendantSelector: '[data-testid^="conversation-turn-"]',
-      descendantTestIdAttribute: "data-testid",
       fallbackPolicy: "node-list-index"
     },
     role: {
@@ -107,6 +90,9 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
         primary: "div.markdown",
         fallbacks: [".markdown", 'article[data-turn="assistant"]']
       }
+    },
+    assistantGeneration: {
+      stopButtonSelector: 'button[data-testid="stop-button"]'
     }
   },
   derived: {
@@ -117,15 +103,16 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
   }
 } as const satisfies ChatgptSourceDataCollectionStrategyContract;
 
-type ChatgptSourceDataCollectionStrategy = typeof CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY;
-
 export interface CollectChatgptSourceDataInput {
   root: Document;
   conversationUrl: string;
+  captureScope: ChatgptCaptureScope;
 }
 
-function toArray<T>(list: ArrayLike<T>): T[] {
-  return Array.from(list);
+export interface CollectedChatgptSourceData extends ConversationSource {
+  collectionMeta: {
+    scopeIds: readonly string[];
+  };
 }
 
 function normalizeText(value: string | null | undefined): string {
@@ -153,7 +140,7 @@ function extractConversationOriginalId(value: string, pattern: RegExp): string |
 function resolveConversationOriginalId(
   root: Document,
   conversationUrl: string,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["conversationId"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["conversationId"]
 ): string | null {
   if (strategy.primarySource === "conversation-url") {
     const fromUrl = extractConversationOriginalId(conversationUrl, strategy.uuidPathPattern);
@@ -186,10 +173,21 @@ function resolveConversationOriginalId(
   return null;
 }
 
+export function resolveChatgptConversationOriginalId(input: {
+  root: Document;
+  conversationUrl: string;
+}): string | null {
+  return resolveConversationOriginalId(
+    input.root,
+    input.conversationUrl,
+    CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY.fields.conversationId
+  );
+}
+
 function resolveConversationUrl(
   root: Document,
   conversationUrl: string,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["conversationId"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["conversationId"]
 ): string {
   const fromInput = normalizeText(conversationUrl);
   if (fromInput.length > 0) {
@@ -206,7 +204,7 @@ function resolveConversationUrl(
 
 function parseRoleFromElement(
   element: Element,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["role"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["role"]
 ): ChatgptMessageRole | null {
   const article = element.closest(strategy.articleSelector);
   const articleTestId = normalizeText(article?.getAttribute(strategy.articleTestIdAttribute));
@@ -232,37 +230,9 @@ function parseRoleFromElement(
   return null;
 }
 
-function parseTurnIndexFromElement(
-  element: Element,
-  fallbackIndex: number,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["turnIndex"]
-): number {
-  const fromArticle = normalizeText(
-    element.closest(strategy.articleSelector)?.getAttribute(strategy.articleTestIdAttribute)
-  );
-  const articleMatch = fromArticle.match(strategy.testIdPattern);
-  if (articleMatch) {
-    return Number.parseInt(articleMatch[1], 10);
-  }
-
-  const descendant = element.querySelector(strategy.descendantSelector);
-  const fromDescendant = normalizeText(descendant?.getAttribute(strategy.descendantTestIdAttribute));
-  const descendantMatch = fromDescendant.match(strategy.testIdPattern);
-  if (descendantMatch) {
-    return Number.parseInt(descendantMatch[1], 10);
-  }
-
-  if (strategy.fallbackPolicy === "node-list-index") {
-    return fallbackIndex;
-  }
-
-  return fallbackIndex;
-}
-
-
 function parseMessageOriginalId(
   element: Element,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["messageId"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["messageId"]
 ): string | null {
   const primary = normalizeText(element.getAttribute(strategy.primaryAttribute));
   if (primary.length > 0) {
@@ -286,7 +256,7 @@ function parseMessageOriginalId(
 function parseContent(
   element: Element,
   role: ChatgptMessageRole,
-  strategy: ChatgptSourceDataCollectionStrategy["fields"]["content"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["content"]
 ): string {
   const selectors = role === "user" ? strategy.user : strategy.assistant;
 
@@ -301,29 +271,20 @@ function parseContent(
   return normalizeText(element.textContent);
 }
 
-export function resolveChatgptMessageContainers(root: Document): Element[] {
-  const fromPrimary = toArray(root.querySelectorAll(CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY.messageContainer.primary));
-  if (fromPrimary.length > 0) {
-    return fromPrimary;
-  }
-
-  for (const selector of CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY.messageContainer.fallbacks) {
-    const fromFallback = toArray(root.querySelectorAll(selector));
-    if (fromFallback.length > 0) {
-      return fromFallback;
-    }
-  }
-
-  return [];
+function hasActiveAssistantGenerationSignal(
+  root: Document,
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["assistantGeneration"]
+): boolean {
+  return root.querySelector(strategy.stopButtonSelector) !== null;
 }
 
-// Contract: returns ConversationSource only when conversationId(UUID) is resolvable.
-// Unresolved state must be retried by caller (ISOLATED collection loop).
+// Contract: returns ConversationSource only when conversationId(UUID) is resolvable
+// and capture scope rows are already resolved by caller.
 export function collectChatgptSourceData(
   input: CollectChatgptSourceDataInput
-): ConversationSource | null {
-  const strategy: ChatgptSourceDataCollectionStrategy = CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY;
-  const messageElements = resolveChatgptMessageContainers(input.root);
+): CollectedChatgptSourceData | null {
+  const strategy: ChatgptSourceDataCollectionStrategyContract = CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY;
+  const messageElements = input.captureScope.messageContainers;
   const conversationOriginalId = resolveConversationOriginalId(
     input.root,
     input.conversationUrl,
@@ -342,6 +303,11 @@ export function collectChatgptSourceData(
   );
 
   const messageRefs: ConversationSource["messageRefs"] = [];
+  const assistantGenerationActive = hasActiveAssistantGenerationSignal(
+    input.root,
+    strategy.fields.assistantGeneration
+  );
+  const latestMessageIndex = messageElements.length - 1;
 
   for (let index = 0; index < messageElements.length; index += 1) {
     const element = messageElements[index];
@@ -355,9 +321,17 @@ export function collectChatgptSourceData(
       continue;
     }
 
+    if (assistantGenerationActive && role === "assistant" && index === latestMessageIndex) {
+      continue;
+    }
+
     const content = parseContent(element, role, strategy.fields.content);
+    if (role === "assistant" && content.length === 0) {
+      continue;
+    }
+
     const preview = content.slice(0, strategy.derived.previewMaxLength);
-    const turnIndex = parseTurnIndexFromElement(element, index, strategy.fields.turnIndex);
+    const turnIndex = parseChatgptTurnIndexFromElement(element, index);
 
     messageRefs.push({
       id: `mh-msg-${originalId}` as ConversationSource["messageRefs"][number]["id"],
@@ -374,6 +348,19 @@ export function collectChatgptSourceData(
     });
   }
 
+  const deduplicatedMessageRefs: ConversationSource["messageRefs"] = [];
+  const seenOriginalIds = new Set<string>();
+  for (let index = messageRefs.length - 1; index >= 0; index -= 1) {
+    const messageRef = messageRefs[index];
+    const originalId = messageRef.metadata.originalId;
+    if (seenOriginalIds.has(originalId)) {
+      continue;
+    }
+    seenOriginalIds.add(originalId);
+    deduplicatedMessageRefs.push(messageRef);
+  }
+  deduplicatedMessageRefs.reverse();
+
   return {
     conversation: {
       id: conversationId,
@@ -385,7 +372,9 @@ export function collectChatgptSourceData(
         url: resolvedConversationUrl
       }
     },
-    messageRefs
+    messageRefs: deduplicatedMessageRefs,
+    collectionMeta: {
+      scopeIds: deduplicatedMessageRefs.map((messageRef) => messageRef.metadata.originalId)
+    }
   };
 }
-

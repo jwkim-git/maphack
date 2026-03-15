@@ -19,17 +19,17 @@ architecture before scaling functionality.
 - Chrome Extension Manifest V3
 - Content Scripts (MAIN/ISOLATED split)
 - Background Service Worker
-- Shadow DOM (UI isolation, planned)
-- Build tooling (planned: Vite)
+- Shadow DOM
+- Build tooling: esbuild
 
 ## Data Handling
 
 - Message content is processed in memory only (no persistence)
-- Message previews and user data (Bookmark/Tag/Memo) are stored locally in IndexedDB
+- Bookmarks are stored locally in IndexedDB
 - No external transmission (no server/API calls)
 
 ## Status
 
-- Early development stage
+- Working slice implemented: Base + Bookmark on ChatGPT
 - Work in progress (active development)
-- Core structure and data flow are being defined
+- Current priority: structural boundary refinement

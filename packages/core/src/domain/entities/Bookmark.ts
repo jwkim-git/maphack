@@ -14,4 +14,5 @@ export interface Bookmark {
   conversationUrl: string;
   platform: string;
   createdAt: number;
+  edited: boolean;
 }

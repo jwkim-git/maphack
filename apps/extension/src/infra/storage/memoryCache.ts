@@ -1,4 +1,5 @@
 import type {
+  CaptureMode,
   ConversationSource,
   ConversationSourcePort
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
@@ -51,43 +52,56 @@ function recalculateConversationTimestampBounds(source: ConversationSource): voi
   source.conversation.updatedAt = Math.max(...timestamps);
 }
 
-function getTimestampSourceRank(source: TimestampSource | undefined): number {
-  if (source === "fiber") {
-    return 2;
-  }
-  if (source === "json" || source === "stream") {
-    return 1;
-  }
-  return 0;
-}
-
-function shouldApplyTimestamp(
-  currentSource: TimestampSource | undefined,
-  incomingSource: TimestampSource
-): boolean {
-  return getTimestampSourceRank(incomingSource) >= getTimestampSourceRank(currentSource);
-}
-
 export class MemoryConversationSourceCache implements ConversationSourcePort, TimestampPort {
   private readonly sourceByConversationId = new Map<MapHackConversationId, StoredSource>();
 
-  async upsert(source: ConversationSource): Promise<void> {
+  private persistSource(
+    conversationId: MapHackConversationId,
+    source: ConversationSource,
+    timestampSourceByMessageId: Map<MessageRef["id"], TimestampSource>
+  ): void {
+    recalculateConversationTimestampBounds(source);
+    this.sourceByConversationId.set(conversationId, {
+      source,
+      timestampSourceByMessageId
+    });
+  }
+
+  async upsert(source: ConversationSource, captureMode: CaptureMode): Promise<void> {
+    if (captureMode === "snapshot") {
+      await this.applySnapshotUpsert(source);
+      return;
+    }
+
+    await this.applyDeltaUpsert(source);
+  }
+
+  async hasConversationSource(conversationId: MapHackConversationId): Promise<boolean> {
+    return this.sourceByConversationId.has(conversationId);
+  }
+
+  private async applySnapshotUpsert(source: ConversationSource): Promise<void> {
     const nextSource = cloneSource(source);
     const stored = this.sourceByConversationId.get(source.conversation.id);
-    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>();
-
+    const previousByMessageId = new Map<MessageRef["id"], MessageRef>();
     if (stored) {
-      const previousByMessageId = new Map<MessageRef["id"], MessageRef>();
       for (const messageRef of stored.source.messageRefs) {
         previousByMessageId.set(messageRef.id, messageRef);
       }
+    }
 
+    for (const messageRef of nextSource.messageRefs) {
+      const previous = previousByMessageId.get(messageRef.id);
+      if (previous && messageRef.timestamp === null && previous.timestamp !== null) {
+        messageRef.timestamp = previous.timestamp;
+      }
+    }
+
+    nextSource.messageRefs.sort((left, right) => left.metadata.turnIndex - right.metadata.turnIndex);
+
+    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>();
+    if (stored) {
       for (const messageRef of nextSource.messageRefs) {
-        const previous = previousByMessageId.get(messageRef.id);
-        if (previous && messageRef.timestamp === null && previous.timestamp !== null) {
-          messageRef.timestamp = previous.timestamp;
-        }
-
         const previousSource = stored.timestampSourceByMessageId.get(messageRef.id);
         if (previousSource !== undefined) {
           nextTimestampSourceByMessageId.set(messageRef.id, previousSource);
@@ -95,11 +109,59 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       }
     }
 
-    recalculateConversationTimestampBounds(nextSource);
-    this.sourceByConversationId.set(source.conversation.id, {
-      source: nextSource,
-      timestampSourceByMessageId: nextTimestampSourceByMessageId
-    });
+    this.persistSource(source.conversation.id, nextSource, nextTimestampSourceByMessageId);
+  }
+
+  private async applyDeltaUpsert(source: ConversationSource): Promise<void> {
+    const stored = this.sourceByConversationId.get(source.conversation.id);
+    if (!stored) {
+      throw new Error("snapshot-required");
+    }
+
+    const deltaSource = cloneSource(source);
+    const nextSource = cloneSource(stored.source);
+    nextSource.conversation = {
+      ...nextSource.conversation,
+      ...deltaSource.conversation,
+      metadata: {
+        ...nextSource.conversation.metadata,
+        ...deltaSource.conversation.metadata
+      }
+    };
+
+    const previousByMessageId = new Map<MessageRef["id"], MessageRef>();
+    for (const messageRef of stored.source.messageRefs) {
+      previousByMessageId.set(messageRef.id, messageRef);
+    }
+
+    const mergedMessageRefByTurnIndex = new Map<number, MessageRef>();
+    for (const messageRef of nextSource.messageRefs) {
+      mergedMessageRefByTurnIndex.set(messageRef.metadata.turnIndex, messageRef);
+    }
+
+    for (const messageRef of deltaSource.messageRefs) {
+      const previous = previousByMessageId.get(messageRef.id);
+      if (previous && messageRef.timestamp === null && previous.timestamp !== null) {
+        messageRef.timestamp = previous.timestamp;
+      }
+    }
+
+    for (const messageRef of deltaSource.messageRefs) {
+      mergedMessageRefByTurnIndex.set(messageRef.metadata.turnIndex, messageRef);
+    }
+
+    nextSource.messageRefs = Array.from(mergedMessageRefByTurnIndex.values());
+    nextSource.messageRefs.sort((left, right) => left.metadata.turnIndex - right.metadata.turnIndex);
+
+    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>();
+    for (const messageRef of nextSource.messageRefs) {
+      const previousSource = stored.timestampSourceByMessageId.get(messageRef.id);
+      if (previousSource !== undefined) {
+        nextTimestampSourceByMessageId.set(messageRef.id, previousSource);
+      }
+    }
+
+    this.persistSource(source.conversation.id, nextSource, nextTimestampSourceByMessageId);
   }
 
   async listByConversationId(conversationId: MapHackConversationId): Promise<MessageRef[]> {
@@ -109,6 +171,22 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
     }
 
     return stored.source.messageRefs.map(cloneMessageRef);
+  }
+
+  async countUnresolvedByConversationId(conversationId: MapHackConversationId): Promise<number> {
+    const stored = this.sourceByConversationId.get(conversationId);
+    if (!stored) {
+      return 0;
+    }
+
+    let unresolvedCount = 0;
+    for (const messageRef of stored.source.messageRefs) {
+      if (messageRef.timestamp === null) {
+        unresolvedCount += 1;
+      }
+    }
+
+    return unresolvedCount;
   }
 
   async apply(
@@ -143,9 +221,6 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       }
 
       const currentSource = nextTimestampSourceByMessageId.get(messageRef.id);
-      if (!shouldApplyTimestamp(currentSource, source)) {
-        continue;
-      }
 
       if (messageRef.timestamp === mapping.timestamp && currentSource === source) {
         continue;
@@ -160,10 +235,6 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       return;
     }
 
-    recalculateConversationTimestampBounds(nextSource);
-    this.sourceByConversationId.set(conversationId, {
-      source: nextSource,
-      timestampSourceByMessageId: nextTimestampSourceByMessageId
-    });
+    this.persistSource(conversationId, nextSource, nextTimestampSourceByMessageId);
   }
 }
