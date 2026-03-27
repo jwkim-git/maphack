@@ -95,19 +95,27 @@
     };
   }
 
+  // packages/core/src/domain/value/MapHackMessageId.ts
+  var MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
+  function toOriginalMessageId(messageId) {
+    return messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
+  }
+  function isMapHackMessageId(value) {
+    return value.startsWith(MAPHACK_MESSAGE_ID_PREFIX);
+  }
+
   // apps/extension/src/infra/providers/chatgpt/fiberTimestampCollector.ts
   var REACT_FIBER_KEY_PREFIX = "__reactFiber$";
-  var MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
   var MAX_FIBER_ANCESTOR_DEPTH = 8;
   function isRecord(value) {
     return typeof value === "object" && value !== null;
   }
-  function toOriginalMessageId(messageId) {
-    if (!messageId.startsWith(MAPHACK_MESSAGE_ID_PREFIX)) {
+  function toOriginalId(messageId) {
+    if (!isMapHackMessageId(messageId)) {
       return messageId.length > 0 ? messageId : null;
     }
-    const original = messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
-    return original.length > 0 ? original : null;
+    const originalId = toOriginalMessageId(messageId);
+    return originalId.length > 0 ? originalId : null;
   }
   function resolveFiber(element) {
     const record = element;
@@ -131,7 +139,7 @@
     return void 0;
   }
   function resolveTimestampByMessageId(messageId) {
-    const originalMessageId = toOriginalMessageId(messageId);
+    const originalMessageId = toOriginalId(messageId);
     if (originalMessageId === null || typeof document === "undefined") {
       return null;
     }
@@ -162,6 +170,52 @@
       id: messageId,
       createTime: resolveTimestampByMessageId(messageId)
     }));
+  }
+
+  // packages/core/src/domain/value/MapHackConversationId.ts
+  function toMapHackConversationId(originalId) {
+    return `mh-conv-${originalId}`;
+  }
+
+  // apps/extension/src/application/chatgpt/resolveChatgptConversationOriginalId.ts
+  var CHATGPT_CONVERSATION_PATH_PATTERN = /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
+  function normalize(value) {
+    return value?.trim() ?? "";
+  }
+  function extractOriginalId(value) {
+    const normalized = normalize(value);
+    if (normalized.length === 0) {
+      return null;
+    }
+    const match = normalized.match(CHATGPT_CONVERSATION_PATH_PATTERN);
+    return match ? normalize(match[1]).toLowerCase() : null;
+  }
+  function resolveChatgptConversationOriginalId(input) {
+    return extractOriginalId(input.conversationUrl) ?? extractOriginalId(input.pathname) ?? extractOriginalId(input.canonicalHref) ?? null;
+  }
+
+  // apps/extension/src/infra/providers/chatgpt/currentConversation.ts
+  function readCurrentChatgptConversation() {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return null;
+    }
+    const canonicalElement = document.querySelector('link[rel="canonical"]');
+    const canonicalHref = canonicalElement instanceof HTMLLinkElement ? canonicalElement.href : null;
+    const url = window.location.href;
+    const pathname = window.location.pathname;
+    const originalId = resolveChatgptConversationOriginalId({
+      conversationUrl: url,
+      pathname,
+      canonicalHref
+    });
+    if (originalId === null) {
+      return null;
+    }
+    return {
+      id: toMapHackConversationId(originalId),
+      originalId,
+      url
+    };
   }
 
   // packages/shared/src/utils/time/toUnixSecondsOrNull.ts
@@ -241,10 +295,8 @@
   }
 
   // apps/extension/src/entrypoints/content/main.ts
-  var CHATGPT_CONVERSATION_PATH_PATTERN = /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
-  function resolveConversationId(pathname) {
-    const match = pathname.match(CHATGPT_CONVERSATION_PATH_PATTERN);
-    return match ? `mh-conv-${match[1].toLowerCase()}` : null;
+  function resolveActiveConversationId() {
+    return readCurrentChatgptConversation()?.id ?? null;
   }
   function isValidTargetOrigin(hostname, targetOrigin) {
     try {
@@ -258,7 +310,7 @@
     if (typeof window === "undefined") {
       return null;
     }
-    const activeConversationId = resolveConversationId(window.location.pathname);
+    const activeConversationId = resolveActiveConversationId();
     if (activeConversationId !== null && activeConversationId !== request.conversationId) {
       return null;
     }

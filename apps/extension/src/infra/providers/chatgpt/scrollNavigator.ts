@@ -13,7 +13,7 @@ type ChatgptScrollContainerResolutionStrategyContract = {
   fallbacks: readonly ("closest-overflow-scroll-container" | "document-scrolling-element")[];
 };
 
-export const CHATGPT_SCROLL_CONTAINER_RESOLUTION_STRATEGY = {
+const CHATGPT_SCROLL_CONTAINER_RESOLUTION_STRATEGY = {
   primary: CHATGPT_SCROLL_CONTAINER_PRIMARY,
   fallbacks: [
     "closest-overflow-scroll-container",
@@ -39,13 +39,13 @@ type PersistedTurnNavigationTarget = {
 const CHATGPT_PENDING_NAVIGATION_STORAGE_KEY = "maphack:chatgpt-pending-turn-navigation";
 
 function resolveClosestOverflowScrollContainer(
-  root: Document,
-  messageContainers: readonly Element[]
+  messageContainers: readonly Element[],
+  windowRef: Window
 ): Element | null {
   for (const messageElement of messageContainers) {
     let current: Element | null = messageElement.parentElement;
     while (current) {
-      const overflowY = root.defaultView?.getComputedStyle(current).overflowY ?? "";
+      const overflowY = windowRef.getComputedStyle(current).overflowY;
       if (overflowY === "auto" || overflowY === "scroll") {
         return current;
       }
@@ -56,9 +56,10 @@ function resolveClosestOverflowScrollContainer(
   return null;
 }
 
-export function resolveChatgptScrollContainer(
+function resolveChatgptScrollContainer(
   root: Document,
-  messageContainers: readonly Element[]
+  messageContainers: readonly Element[],
+  windowRef: Window
 ): Element | null {
   const strategy: ChatgptScrollContainerResolutionStrategy = CHATGPT_SCROLL_CONTAINER_RESOLUTION_STRATEGY;
 
@@ -69,7 +70,7 @@ export function resolveChatgptScrollContainer(
 
   for (const fallback of strategy.fallbacks) {
     if (fallback === "closest-overflow-scroll-container") {
-      const fromClosest = resolveClosestOverflowScrollContainer(root, messageContainers);
+      const fromClosest = resolveClosestOverflowScrollContainer(messageContainers, windowRef);
       if (fromClosest) {
         return fromClosest;
       }
@@ -155,25 +156,26 @@ function clearPendingTarget(storageRef: Storage | null): void {
 }
 
 function resolveScrollContainerVisibleStartOffset(
-  root: Document,
-  scrollContainer: Element
+  scrollContainer: Element,
+  windowRef: Window
 ): number {
-  const rawValue = root.defaultView?.getComputedStyle(scrollContainer).scrollPaddingTop ?? "";
+  const rawValue = windowRef.getComputedStyle(scrollContainer).scrollPaddingTop;
   const parsedValue = Number.parseFloat(rawValue);
   return Number.isFinite(parsedValue) ? parsedValue : 0;
 }
 
 function scrollTurnElementIntoView(
   root: Document,
-  turnElement: Element
+  turnElement: Element,
+  windowRef: Window
 ): void {
-  const scrollContainer = resolveChatgptScrollContainer(root, [turnElement]);
+  const scrollContainer = resolveChatgptScrollContainer(root, [turnElement], windowRef);
   if (!scrollContainer) {
     turnElement.scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
 
-  const visibleStartOffset = resolveScrollContainerVisibleStartOffset(root, scrollContainer);
+  const visibleStartOffset = resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef);
   const nextTop =
     scrollContainer.scrollTop +
     (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) -
@@ -197,6 +199,7 @@ function findChatgptTurnElementByTarget(
 
 async function consumePendingTarget(
   root: Document,
+  windowRef: Window,
   storageRef: Storage | null,
   readyConversationId: string
 ): Promise<void> {
@@ -214,7 +217,7 @@ async function consumePendingTarget(
     return;
   }
 
-  scrollTurnElementIntoView(root, turnElement);
+  scrollTurnElementIntoView(root, turnElement, windowRef);
   clearPendingTarget(storageRef);
 }
 
@@ -231,7 +234,7 @@ export function createChatgptTurnNavigator(
         return;
       }
 
-      scrollTurnElementIntoView(documentRef, turnElement);
+      scrollTurnElementIntoView(documentRef, turnElement, windowRef);
     },
 
     async navigateAcrossConversations(target: TurnNavigationTarget): Promise<void> {
@@ -240,7 +243,7 @@ export function createChatgptTurnNavigator(
     },
 
     async consumePendingNavigation(readyConversationId: string): Promise<void> {
-      await consumePendingTarget(documentRef, storageRef, readyConversationId);
+      await consumePendingTarget(documentRef, windowRef, storageRef, readyConversationId);
     }
   };
 }

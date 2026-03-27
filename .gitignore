@@ -13,3 +13,4 @@
 # Agent/System
 /.agents/
 /.codex/
+.mcp.json

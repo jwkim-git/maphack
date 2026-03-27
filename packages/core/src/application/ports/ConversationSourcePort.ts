@@ -12,7 +12,7 @@ export interface ConversationSource {
 export type CaptureMode = "snapshot" | "delta";
 
 export interface ConversationSourcePort {
-  upsert(source: ConversationSource, captureMode: CaptureMode): Promise<void>;
-  hasConversationSource(conversationId: MapHackConversationId): Promise<boolean>;
+  get(conversationId: MapHackConversationId): Promise<ConversationSource | null>;
+  save(conversationId: MapHackConversationId, source: ConversationSource): Promise<void>;
   listByConversationId(conversationId: MapHackConversationId): Promise<MessageRef[]>;
 }

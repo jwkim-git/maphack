@@ -22,11 +22,44 @@ import {
   TIMESTAMP_PULL_REQUEST_TYPE
 } from "../../infra/messaging/timestampPayload";
 import {
-  collectChatgptSourceData,
-  resolveChatgptConversationOriginalId
+  collectChatgptSourceData
 } from "../../infra/providers/chatgpt/domParser";
+import { readCurrentChatgptConversation } from "../../infra/providers/chatgpt/currentConversation";
 import { resolveChatgptCaptureScope } from "../../infra/providers/chatgpt/threadScope";
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
+import type { ConversationSource } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
+import {
+  type SourceSyncState,
+  type TrackedMessageId,
+  syncConversationIdState,
+  isTrackedMessageId,
+  createRuntimeRequestId
+} from "../../application/sourceSync/state";
+import {
+  resolveMessageIdByTurnIndex,
+  replacePreviousMessageIdByTurnIndex,
+  resolveChangedTurnIndexes,
+  resolveDeltaMessageIdsByChangedTurns,
+  selectSourceByMessageIds
+} from "../../application/sourceSync/resolveChangedTurnIndexes";
+import {
+  TRANSITION_STABILIZATION_RETRY_MS,
+  hasLastCommittedScopeOverlap
+} from "../../application/sourceSync/transitionPolicy";
+import {
+  type TimestampPayload,
+  TIMESTAMP_REQUEST_TTL_MS,
+  toNextUnresolvedState,
+  createTimestampRequestId,
+  pruneExpiredTimestampRequests,
+  collectPendingMessageIds,
+  markPayloadSuccessState,
+  markPayloadFailureState
+} from "../../application/sourceSync/timestampCorrelation";
+import { isPersistableSource } from "../../application/sourceSync/sourceValidityPolicy";
+
+export { bootstrapSourceSyncState } from "../../application/sourceSync/state";
+export type { SourceSyncState } from "../../application/sourceSync/state";
 
 export type RuntimeSendMessage = (message: unknown) => unknown | Promise<unknown>;
 type PostMainMessage = (message: unknown, targetOrigin: string) => void;
@@ -40,157 +73,38 @@ export type CaptureResult =
   | "sent";
 type ApplyResult = "accepted" | "ignored" | "failed";
 type ChatgptSourceData = NonNullable<ReturnType<typeof collectChatgptSourceData>>;
-type TrackedMessageId = ChatgptSourceData["messageRefs"][number]["id"];
-type RequestState = { status: "unresolved" | "resolved"; retryAt: number; retryAttempt: number };
-type PendingTimestampRequest = {
-  conversationId: string;
-  messageIds: Set<TrackedMessageId>;
-  expiresAt: number;
-};
-type SourceSyncState = {
-  activeConversationId: string | null;
-  requestStateByMessageId: Map<TrackedMessageId, RequestState>;
-  previousMessageIdByTurnIndex: Map<number, TrackedMessageId>;
-  hasInitialSnapshotCaptured: boolean;
-  lastCommittedConversationId: string | null;
-  lastCommittedScopeIds: Set<string>;
-  transitionRetryAt: number | null;
-  pendingTimestampRequests: Map<string, PendingTimestampRequest>;
-};
-
-const TIMESTAMP_RETRY_BACKOFF_MS = [1_000, 2_000, 3_000] as const;
-const TRANSITION_STABILIZATION_RETRY_MS = 120;
-const TIMESTAMP_REQUEST_TTL_MS = 5_000;
-const MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
-
-function createRuntimeRequestId(scope: "capture" | "apply"): string {
-  return `mh-req:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function bootstrapSourceSyncState(): SourceSyncState {
-  return {
-    activeConversationId: null,
-    requestStateByMessageId: new Map<TrackedMessageId, RequestState>(),
-    previousMessageIdByTurnIndex: new Map<number, TrackedMessageId>(),
-    hasInitialSnapshotCaptured: false,
-    lastCommittedConversationId: null,
-    lastCommittedScopeIds: new Set<string>(),
-    transitionRetryAt: null,
-    pendingTimestampRequests: new Map<string, PendingTimestampRequest>()
-  };
-}
-
-function resetConversationSyncState(state: SourceSyncState): void {
-  state.requestStateByMessageId.clear();
-  state.previousMessageIdByTurnIndex.clear();
-  state.hasInitialSnapshotCaptured = false;
-  state.transitionRetryAt = null;
-  state.pendingTimestampRequests.clear();
-}
-
-function syncConversationIdState(nextConversationId: string, state: SourceSyncState): void {
-  if (state.activeConversationId === nextConversationId) {
-    return;
-  }
-
-  state.activeConversationId = nextConversationId;
-  resetConversationSyncState(state);
-}
 
 function resolveSourceData(
   hostname: string,
   root: Document,
-  conversationUrl: string,
   state: SourceSyncState
 ): ChatgptSourceData | "provider-unsupported" | "source-unavailable" | "transition-pending" {
   if (resolveProviderIdByHostname(hostname) !== "chatgpt") {
     return "provider-unsupported";
   }
 
-  const conversationOriginalId = resolveChatgptConversationOriginalId({ root, conversationUrl });
-  if (!conversationOriginalId) {
+  const conversation = readCurrentChatgptConversation();
+  if (conversation === null) {
     return "source-unavailable";
   }
 
-  const conversationId = `mh-conv-${conversationOriginalId}` as ChatgptSourceData["conversation"]["id"];
-  syncConversationIdState(conversationId, state);
+  syncConversationIdState(conversation.id, state);
 
-  const captureScope = resolveChatgptCaptureScope(root);
+  const captureScope = resolveChatgptCaptureScope(root, root.defaultView!);
   if (!captureScope) {
     state.transitionRetryAt = Date.now() + TRANSITION_STABILIZATION_RETRY_MS;
     return "transition-pending";
   }
 
-  return collectChatgptSourceData({ root, conversationUrl, captureScope }) ?? "source-unavailable";
-}
-
-function resolveMessageIdByTurnIndex(source: ChatgptSourceData): Map<number, TrackedMessageId> {
-  const next = new Map<number, TrackedMessageId>();
-  for (const messageRef of source.messageRefs) {
-    next.set(messageRef.metadata.turnIndex, messageRef.id);
-  }
-  return next;
-}
-
-function replacePreviousMessageIdByTurnIndex(
-  state: SourceSyncState,
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>
-): void {
-  state.previousMessageIdByTurnIndex.clear();
-  for (const [turnIndex, messageId] of nextMessageIdByTurnIndex.entries()) {
-    state.previousMessageIdByTurnIndex.set(turnIndex, messageId);
-  }
-}
-
-function resolveChangedTurnIndexes(
-  state: SourceSyncState,
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>
-): number[] {
-  if (!state.hasInitialSnapshotCaptured) {
-    return Array.from(nextMessageIdByTurnIndex.keys());
-  }
-
-  const changedTurnIndexes: number[] = [];
-  for (const [turnIndex, messageId] of nextMessageIdByTurnIndex.entries()) {
-    if (state.previousMessageIdByTurnIndex.get(turnIndex) === messageId) {
-      continue;
-    }
-    changedTurnIndexes.push(turnIndex);
-  }
-  return changedTurnIndexes;
-}
-
-function resolveDeltaMessageIdsByChangedTurns(
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>,
-  changedTurnIndexes: readonly number[]
-): TrackedMessageId[] {
-  const deltaMessageIds: TrackedMessageId[] = [];
-  for (const turnIndex of changedTurnIndexes) {
-    const messageId = nextMessageIdByTurnIndex.get(turnIndex);
-    if (!messageId) {
-      continue;
-    }
-    deltaMessageIds.push(messageId);
-  }
-  return deltaMessageIds;
-}
-
-function selectSourceByMessageIds(
-  source: ChatgptSourceData,
-  messageIds: Set<TrackedMessageId>
-): ChatgptSourceData {
-  const messageRefs = source.messageRefs.filter((messageRef) => messageIds.has(messageRef.id));
-  return {
-    conversation: source.conversation,
-    messageRefs,
-    collectionMeta: {
-      scopeIds: messageRefs.map((messageRef) => messageRef.metadata.originalId)
-    }
-  };
+  return collectChatgptSourceData({
+    root,
+    conversation,
+    captureScope
+  }) ?? "source-unavailable";
 }
 
 async function captureConversationSource(
-  source: ChatgptSourceData,
+  source: ConversationSource,
   captureMode: "snapshot" | "delta",
   sendRuntimeMessage: RuntimeSendMessage
 ): Promise<"payload-invalid" | "capture-failed" | "snapshot-required" | "sent"> {
@@ -222,64 +136,6 @@ async function captureConversationSource(
   return "payload-invalid";
 }
 
-function resolveNextRetryDelayMs(previous: RequestState | undefined): number {
-  const nextAttempt = previous
-    ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1)
-    : 0;
-  return TIMESTAMP_RETRY_BACKOFF_MS[nextAttempt];
-}
-
-function toNextUnresolvedState(now: number, previous: RequestState | undefined): RequestState {
-  const nextAttempt = previous
-    ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1)
-    : 0;
-  return {
-    status: "unresolved",
-    retryAttempt: nextAttempt,
-    retryAt: now + resolveNextRetryDelayMs(previous)
-  };
-}
-
-function toResolvedState(): RequestState {
-  return {
-    status: "resolved",
-    retryAt: Number.POSITIVE_INFINITY,
-    retryAttempt: 0
-  };
-}
-
-function isTrackedMessageId(value: string): value is TrackedMessageId {
-  return value.startsWith(MAPHACK_MESSAGE_ID_PREFIX);
-}
-
-function createTimestampRequestId(): string {
-  return `mh-ts:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function pruneExpiredTimestampRequests(state: SourceSyncState, now: number): void {
-  for (const [requestId, request] of state.pendingTimestampRequests.entries()) {
-    if (request.expiresAt <= now) {
-      state.pendingTimestampRequests.delete(requestId);
-    }
-  }
-}
-
-function collectPendingMessageIds(state: SourceSyncState, now: number): Set<TrackedMessageId> {
-  const pendingIds = new Set<TrackedMessageId>();
-
-  for (const request of state.pendingTimestampRequests.values()) {
-    if (request.expiresAt <= now) {
-      continue;
-    }
-
-    for (const messageId of request.messageIds) {
-      pendingIds.add(messageId);
-    }
-  }
-
-  return pendingIds;
-}
-
 function requestTimestampsFromMain(
   source: ChatgptSourceData,
   state: SourceSyncState,
@@ -291,7 +147,7 @@ function requestTimestampsFromMain(
     syncConversationIdState(source.conversation.id, state);
   }
 
-  const liveIds = new Set(source.messageRefs.map((messageRef) => messageRef.id));
+  const liveIds = new Set<TrackedMessageId>(source.messageRefs.map((messageRef) => messageRef.id as TrackedMessageId));
   for (const trackedId of state.requestStateByMessageId.keys()) {
     if (!liveIds.has(trackedId)) {
       state.requestStateByMessageId.delete(trackedId);
@@ -329,21 +185,21 @@ function requestTimestampsFromMain(
     return;
   }
 
-  const requestId = createTimestampRequestId();
-  const request = {
+  const tsRequestId = createTimestampRequestId();
+  const tsRequest = {
     type: TIMESTAMP_PULL_REQUEST_TYPE,
     signature: TIMESTAMP_PULL_REQUEST_SIGNATURE,
     schema: TIMESTAMP_MESSAGE_SCHEMA,
-    requestId,
+    requestId: tsRequestId,
     conversationId: source.conversation.id,
     messageIds
   };
-  if (toTimestampPullRequestMessage(request) === null) {
+  if (toTimestampPullRequestMessage(tsRequest) === null) {
     return;
   }
 
-  postMainMessage(request, targetOrigin);
-  state.pendingTimestampRequests.set(requestId, {
+  postMainMessage(tsRequest, targetOrigin);
+  state.pendingTimestampRequests.set(tsRequestId, {
     conversationId: source.conversation.id,
     messageIds: new Set(messageIds),
     expiresAt: now + TIMESTAMP_REQUEST_TTL_MS
@@ -354,58 +210,8 @@ function requestTimestampsFromMain(
   }
 }
 
-function markPayloadSuccessState(
-  payload: NonNullable<ReturnType<typeof toTimestampPayloadMessage>>,
-  state: SourceSyncState,
-  now: number
-): void {
-  if (state.activeConversationId !== payload.conversationId) {
-    return;
-  }
-
-  for (const item of payload.payload) {
-    if (!isTrackedMessageId(item.id)) {
-      continue;
-    }
-
-    const previous = state.requestStateByMessageId.get(item.id);
-    state.requestStateByMessageId.set(
-      item.id,
-      item.createTime === null ? toNextUnresolvedState(now, previous) : toResolvedState()
-    );
-  }
-}
-
-function markPayloadFailureState(
-  payload: NonNullable<ReturnType<typeof toTimestampPayloadMessage>>,
-  state: SourceSyncState,
-  now: number
-): void {
-  if (state.activeConversationId !== payload.conversationId) {
-    return;
-  }
-
-  for (const item of payload.payload) {
-    if (!isTrackedMessageId(item.id)) {
-      continue;
-    }
-
-    const previous = state.requestStateByMessageId.get(item.id);
-    state.requestStateByMessageId.set(item.id, toNextUnresolvedState(now, previous));
-  }
-}
-
-function hasLastCommittedScopeOverlap(source: ChatgptSourceData, state: SourceSyncState): boolean {
-  if (state.lastCommittedConversationId === source.conversation.id) {
-    return false;
-  }
-
-  return source.collectionMeta.scopeIds.some((originalId) => state.lastCommittedScopeIds.has(originalId));
-}
-
 export async function syncResolvedConversationSource(input: {
   hostname: string;
-  conversationUrl: string;
   root: Document;
   sendRuntimeMessage: RuntimeSendMessage;
   postMainMessage: PostMainMessage;
@@ -417,7 +223,6 @@ export async function syncResolvedConversationSource(input: {
   const sourceOrResult = resolveSourceData(
     input.hostname,
     input.root,
-    input.conversationUrl,
     input.state
   );
   if (sourceOrResult === "transition-pending") {
@@ -427,6 +232,10 @@ export async function syncResolvedConversationSource(input: {
   if (typeof sourceOrResult === "string") {
     input.state.transitionRetryAt = null;
     return sourceOrResult;
+  }
+
+  if (!isPersistableSource(sourceOrResult)) {
+    return "source-unavailable";
   }
 
   if (
@@ -559,21 +368,26 @@ export async function relayMainTimestampPayload(input: {
     return "ignored";
   }
 
+  const tsPayload: TimestampPayload = {
+    conversationId: timestampPayload.conversationId,
+    payload: timestampPayload.payload
+  };
+
   let response: unknown;
   try {
     response = await input.sendRuntimeMessage(request);
   } catch {
-    markPayloadFailureState(timestampPayload, input.state, now);
+    markPayloadFailureState(tsPayload, input.state, now);
     return "failed";
   }
   if (isApplyTimestampsSuccess(response) && response.requestId === requestId) {
-    markPayloadSuccessState(timestampPayload, input.state, now);
+    markPayloadSuccessState(tsPayload, input.state, now);
     return "accepted";
   }
   if (isApplyTimestampsFailure(response) && response.requestId === requestId) {
-    markPayloadFailureState(timestampPayload, input.state, now);
+    markPayloadFailureState(tsPayload, input.state, now);
     return "failed";
   }
-  markPayloadFailureState(timestampPayload, input.state, now);
+  markPayloadFailureState(tsPayload, input.state, now);
   return "failed";
 }

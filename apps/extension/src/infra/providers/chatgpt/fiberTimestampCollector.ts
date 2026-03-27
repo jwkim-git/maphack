@@ -1,20 +1,23 @@
+import {
+  isMapHackMessageId,
+  toOriginalMessageId
+} from "../../../../../../packages/core/src/domain/value/MapHackMessageId";
 import type { TimestampSeed } from "./timestampAdapter";
 
 const REACT_FIBER_KEY_PREFIX = "__reactFiber$";
-const MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
 const MAX_FIBER_ANCESTOR_DEPTH = 8;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function toOriginalMessageId(messageId: string): string | null {
-  if (!messageId.startsWith(MAPHACK_MESSAGE_ID_PREFIX)) {
+function toOriginalId(messageId: string): string | null {
+  if (!isMapHackMessageId(messageId)) {
     return messageId.length > 0 ? messageId : null;
   }
 
-  const original = messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
-  return original.length > 0 ? original : null;
+  const originalId = toOriginalMessageId(messageId);
+  return originalId.length > 0 ? originalId : null;
 }
 
 function resolveFiber(element: Element): unknown | null {
@@ -48,7 +51,7 @@ function resolveCreateTime(
 }
 
 function resolveTimestampByMessageId(messageId: string): TimestampSeed["createTime"] {
-  const originalMessageId = toOriginalMessageId(messageId);
+  const originalMessageId = toOriginalId(messageId);
   if (originalMessageId === null || typeof document === "undefined") {
     return null;
   }

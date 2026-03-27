@@ -1,6 +1,7 @@
 import { toTimestampPayloadMessage, toTimestampPullRequestMessage } from "../../infra/messaging/postMessageBridge";
 import type { TimestampPayloadSource } from "../../infra/messaging/timestampPayload";
 import { collectFiberTimestampSeeds } from "../../infra/providers/chatgpt/fiberTimestampCollector";
+import { readCurrentChatgptConversation } from "../../infra/providers/chatgpt/currentConversation";
 import { createTimestampPayloadMessage, type TimestampSeed } from "../../infra/providers/chatgpt/timestampAdapter";
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
 
@@ -16,12 +17,8 @@ export interface PublishTimestampPayloadInput {
   postTimestampMessage: PostTimestampMessage;
 }
 
-const CHATGPT_CONVERSATION_PATH_PATTERN =
-  /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
-
-function resolveConversationId(pathname: string): string | null {
-  const match = pathname.match(CHATGPT_CONVERSATION_PATH_PATTERN);
-  return match ? `mh-conv-${match[1].toLowerCase()}` : null;
+function resolveActiveConversationId(): string | null {
+  return readCurrentChatgptConversation()?.id ?? null;
 }
 
 function isValidTargetOrigin(hostname: string, targetOrigin: string): boolean {
@@ -41,7 +38,7 @@ function collectFiberSnapshot(request: {
     return null;
   }
 
-  const activeConversationId = resolveConversationId(window.location.pathname);
+  const activeConversationId = resolveActiveConversationId();
   if (activeConversationId !== null && activeConversationId !== request.conversationId) {
     return null;
   }

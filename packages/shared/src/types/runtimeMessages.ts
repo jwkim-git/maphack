@@ -47,6 +47,7 @@ export interface RuntimeMessageRef {
   metadata: {
     originalId: string;
     turnIndex: number;
+    turnIndexSource: "primary" | "fallback";
   };
 }
 

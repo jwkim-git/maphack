@@ -44,8 +44,8 @@ function ensureHost(documentRef: Document, sidebarWidthPx: number): HTMLElement 
   host.style.width = `${sidebarWidthPx}px`;
   host.style.height = "100vh";
   host.style.zIndex = "2147483647";
-  host.style.background = "#ffffff";
-  host.style.borderLeft = "1px solid #d0d5dd";
+  host.style.background = "#0d1117";
+  host.style.borderLeft = "1px solid #30363d";
   host.style.overflow = "hidden";
   host.style.transition = "transform 160ms ease";
   documentRef.body.appendChild(host);
@@ -58,6 +58,11 @@ function ensureRoot(documentRef: Document, host: HTMLElement, sidebarWidthPx: nu
   let root = shadowRoot.getElementById(SIDEBAR_ROOT_ID) as HTMLElement | null;
 
   if (!root) {
+    const link = documentRef.createElement("link");
+    link.rel = "stylesheet";
+    link.href = chrome.runtime.getURL("public/sidebar.css");
+    shadowRoot.appendChild(link);
+
     root = documentRef.createElement("div");
     root.id = SIDEBAR_ROOT_ID;
     root.style.width = `${sidebarWidthPx}px`;

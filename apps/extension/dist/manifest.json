@@ -34,6 +34,12 @@
       "run_at": "document_idle",
       "world": "ISOLATED"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["public/sidebar.css"],
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"]
+    }
   ]
 }
 

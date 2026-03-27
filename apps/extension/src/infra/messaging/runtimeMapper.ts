@@ -6,6 +6,7 @@ import type {
   ConversationSource
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
 import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
+import type { MapHackBookmarkId } from "../../../../../packages/core/src/domain/value/MapHackBookmarkId";
 import type { MapHackConversationId } from "../../../../../packages/core/src/domain/value/MapHackConversationId";
 import type { MapHackMessageId } from "../../../../../packages/core/src/domain/value/MapHackMessageId";
 import type {
@@ -15,7 +16,7 @@ import type {
   RuntimeTimestampMapping
 } from "../../../../../packages/shared/src/types/runtimeMessages";
 
-function toRuntimeMessageRef(ref: MessageRef): RuntimeMessageRef {
+export function toRuntimeMessageRef(ref: MessageRef): RuntimeMessageRef {
   return {
     id: ref.id,
     conversationId: ref.conversationId,
@@ -26,7 +27,8 @@ function toRuntimeMessageRef(ref: MessageRef): RuntimeMessageRef {
     conversationUrl: ref.conversationUrl,
     metadata: {
       originalId: ref.metadata.originalId,
-      turnIndex: ref.metadata.turnIndex
+      turnIndex: ref.metadata.turnIndex,
+      turnIndexSource: ref.metadata.turnIndexSource
     }
   };
 }
@@ -42,7 +44,8 @@ export function toDomainMessageRef(ref: RuntimeMessageRef): MessageRef {
     conversationUrl: ref.conversationUrl,
     metadata: {
       originalId: ref.metadata.originalId,
-      turnIndex: ref.metadata.turnIndex
+      turnIndex: ref.metadata.turnIndex,
+      turnIndexSource: ref.metadata.turnIndexSource
     }
   };
 }
@@ -99,6 +102,26 @@ export function toDomainTimestampMappings(
     messageId: item.messageId as MapHackMessageId,
     timestamp: item.timestamp
   }));
+}
+
+export function toDomainBookmark(bookmark: RuntimeBookmark): Bookmark {
+  return {
+    id: bookmark.id as MapHackBookmarkId,
+    conversationId: bookmark.conversationId as MapHackConversationId,
+    messageId: bookmark.messageId as MapHackMessageId,
+    timestamp: bookmark.timestamp,
+    turnIndex: bookmark.turnIndex,
+    messagePreview: bookmark.messagePreview,
+    messageRole: bookmark.messageRole,
+    conversationUrl: bookmark.conversationUrl,
+    platform: bookmark.platform,
+    createdAt: bookmark.createdAt,
+    edited: bookmark.edited
+  };
+}
+
+export function toDomainBookmarks(bookmarks: RuntimeBookmark[]): Bookmark[] {
+  return bookmarks.map(toDomainBookmark);
 }
 
 export function toRuntimeBookmark(bookmark: Bookmark): RuntimeBookmark {

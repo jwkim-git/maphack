@@ -75,9 +75,10 @@ function restoreState(state: AppliedLayoutState | null): void {
 
 function resolveMainUsableRightBoundary(
   documentRef: Document,
+  windowRef: Window,
   viewportRightTolerancePx: number
 ): number {
-  const viewportWidth = window.innerWidth;
+  const viewportWidth = windowRef.innerWidth;
   const panel = documentRef.querySelector(PERSISTENT_RIGHT_PANEL_SELECTOR);
 
   if (panel instanceof HTMLElement) {
@@ -105,10 +106,12 @@ function resolveComposerShellRect(documentRef: Document): DOMRect | null {
 
 function resolveClosedOpenButtonPlacement(
   documentRef: Document,
+  windowRef: Window,
   options: ChatgptSidebarLayoutOptions
 ): ClosedOpenButtonPlacement {
   const mainUsableRightBoundary = resolveMainUsableRightBoundary(
     documentRef,
+    windowRef,
     options.viewportRightTolerancePx
   );
   const composerShellRect = resolveComposerShellRect(documentRef);
@@ -127,7 +130,7 @@ function resolveClosedOpenButtonPlacement(
     centerXPx:
       mainUsableRightBoundary - fallbackRightGapPx - options.openButtonSizePx / 2,
     centerYPx:
-      window.innerHeight - fallbackBottomGapPx - options.openButtonSizePx / 2
+      windowRef.innerHeight - fallbackBottomGapPx - options.openButtonSizePx / 2
   };
 }
 
@@ -174,17 +177,16 @@ function placementsEqual(
 
 export function createChatgptSidebarLayout(
   documentRef: Document,
+  windowRef: Window,
   options: ChatgptSidebarLayoutOptions
 ) {
   if (!documentRef.body) {
     return null;
   }
-
-  const windowRef = documentRef.defaultView ?? window;
   let appliedState: AppliedLayoutState | null = null;
   let hiddenTriggerBar: HiddenElementState | null = null;
   let shellOpen = false;
-  let lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+  let lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
   let closedPlacementSubscriber:
     | ((placement: ClosedOpenButtonPlacement) => void)
     | null = null;
@@ -237,7 +239,7 @@ export function createChatgptSidebarLayout(
   };
 
   const syncClosedPlacement = (): void => {
-    const nextPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+    const nextPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
     if (placementsEqual(lastClosedPlacement, nextPlacement)) {
       return;
     }
@@ -299,7 +301,7 @@ export function createChatgptSidebarLayout(
         shellOpen = false;
         restoreHiddenElement(hiddenTriggerBar);
         hiddenTriggerBar = null;
-        lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+        lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
         return false;
       }
 
@@ -312,7 +314,7 @@ export function createChatgptSidebarLayout(
       shellOpen = false;
       restoreHiddenElement(hiddenTriggerBar);
       hiddenTriggerBar = null;
-      lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+      lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
     },
     dispose(): void {
       shellOpen = false;

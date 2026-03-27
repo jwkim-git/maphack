@@ -103,10 +103,6 @@ export function toTimestampPayloadMessage(value: unknown): TimestampPayloadMessa
   };
 }
 
-export function isTimestampPayloadMessage(value: unknown): value is TimestampPayloadMessage {
-  return toTimestampPayloadMessage(value) !== null;
-}
-
 export function toTimestampPullRequestMessage(value: unknown): TimestampPullRequestMessage | null {
   if (!isObject(value)) {
     return null;
@@ -138,6 +134,3 @@ export function toTimestampPullRequestMessage(value: unknown): TimestampPullRequ
   };
 }
 
-export function isTimestampPullRequestMessage(value: unknown): value is TimestampPullRequestMessage {
-  return toTimestampPullRequestMessage(value) !== null;
-}

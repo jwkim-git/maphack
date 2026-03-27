@@ -19,15 +19,14 @@ export class ListBaseMessages {
   constructor(private readonly sourcePort: ConversationSourcePort) {}
 
   async execute(command: ListBaseMessagesCommand): Promise<ListBaseMessagesResult> {
-    const hasSource = await this.sourcePort.hasConversationSource(command.conversationId);
-    if (!hasSource) {
+    const source = await this.sourcePort.get(command.conversationId);
+    if (source === null) {
       return { status: "source-missing" };
     }
 
-    const messageRefs = await this.sourcePort.listByConversationId(command.conversationId);
     return {
       status: "available",
-      messageRefs
+      messageRefs: source.messageRefs
     };
   }
 }

@@ -1,5 +1,4 @@
 import type {
-  CaptureMode,
   ConversationSource,
   ConversationSourcePort
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
@@ -8,6 +7,7 @@ import type {
   TimestampPort,
   TimestampSource
 } from "../../../../../packages/core/src/application/ports/TimestampPort";
+import { applyTimestampMappings } from "../../../../../packages/core/src/application/policies/applyTimestampMappings";
 import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
 import type { MapHackConversationId } from "../../../../../packages/core/src/domain/value/MapHackConversationId";
 
@@ -37,67 +37,20 @@ function cloneSource(source: ConversationSource): ConversationSource {
   };
 }
 
-function recalculateConversationTimestampBounds(source: ConversationSource): void {
-  const timestamps = source.messageRefs
-    .map((messageRef) => messageRef.timestamp)
-    .filter((timestamp): timestamp is number => timestamp !== null);
-
-  if (timestamps.length === 0) {
-    source.conversation.createdAt = null;
-    source.conversation.updatedAt = null;
-    return;
-  }
-
-  source.conversation.createdAt = Math.min(...timestamps);
-  source.conversation.updatedAt = Math.max(...timestamps);
-}
-
 export class MemoryConversationSourceCache implements ConversationSourcePort, TimestampPort {
   private readonly sourceByConversationId = new Map<MapHackConversationId, StoredSource>();
 
-  private persistSource(
-    conversationId: MapHackConversationId,
-    source: ConversationSource,
-    timestampSourceByMessageId: Map<MessageRef["id"], TimestampSource>
-  ): void {
-    recalculateConversationTimestampBounds(source);
-    this.sourceByConversationId.set(conversationId, {
-      source,
-      timestampSourceByMessageId
-    });
-  }
-
-  async upsert(source: ConversationSource, captureMode: CaptureMode): Promise<void> {
-    if (captureMode === "snapshot") {
-      await this.applySnapshotUpsert(source);
-      return;
+  async get(conversationId: MapHackConversationId): Promise<ConversationSource | null> {
+    const stored = this.sourceByConversationId.get(conversationId);
+    if (!stored) {
+      return null;
     }
-
-    await this.applyDeltaUpsert(source);
+    return cloneSource(stored.source);
   }
 
-  async hasConversationSource(conversationId: MapHackConversationId): Promise<boolean> {
-    return this.sourceByConversationId.has(conversationId);
-  }
-
-  private async applySnapshotUpsert(source: ConversationSource): Promise<void> {
+  async save(conversationId: MapHackConversationId, source: ConversationSource): Promise<void> {
     const nextSource = cloneSource(source);
-    const stored = this.sourceByConversationId.get(source.conversation.id);
-    const previousByMessageId = new Map<MessageRef["id"], MessageRef>();
-    if (stored) {
-      for (const messageRef of stored.source.messageRefs) {
-        previousByMessageId.set(messageRef.id, messageRef);
-      }
-    }
-
-    for (const messageRef of nextSource.messageRefs) {
-      const previous = previousByMessageId.get(messageRef.id);
-      if (previous && messageRef.timestamp === null && previous.timestamp !== null) {
-        messageRef.timestamp = previous.timestamp;
-      }
-    }
-
-    nextSource.messageRefs.sort((left, right) => left.metadata.turnIndex - right.metadata.turnIndex);
+    const stored = this.sourceByConversationId.get(conversationId);
 
     const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>();
     if (stored) {
@@ -109,59 +62,10 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       }
     }
 
-    this.persistSource(source.conversation.id, nextSource, nextTimestampSourceByMessageId);
-  }
-
-  private async applyDeltaUpsert(source: ConversationSource): Promise<void> {
-    const stored = this.sourceByConversationId.get(source.conversation.id);
-    if (!stored) {
-      throw new Error("snapshot-required");
-    }
-
-    const deltaSource = cloneSource(source);
-    const nextSource = cloneSource(stored.source);
-    nextSource.conversation = {
-      ...nextSource.conversation,
-      ...deltaSource.conversation,
-      metadata: {
-        ...nextSource.conversation.metadata,
-        ...deltaSource.conversation.metadata
-      }
-    };
-
-    const previousByMessageId = new Map<MessageRef["id"], MessageRef>();
-    for (const messageRef of stored.source.messageRefs) {
-      previousByMessageId.set(messageRef.id, messageRef);
-    }
-
-    const mergedMessageRefByTurnIndex = new Map<number, MessageRef>();
-    for (const messageRef of nextSource.messageRefs) {
-      mergedMessageRefByTurnIndex.set(messageRef.metadata.turnIndex, messageRef);
-    }
-
-    for (const messageRef of deltaSource.messageRefs) {
-      const previous = previousByMessageId.get(messageRef.id);
-      if (previous && messageRef.timestamp === null && previous.timestamp !== null) {
-        messageRef.timestamp = previous.timestamp;
-      }
-    }
-
-    for (const messageRef of deltaSource.messageRefs) {
-      mergedMessageRefByTurnIndex.set(messageRef.metadata.turnIndex, messageRef);
-    }
-
-    nextSource.messageRefs = Array.from(mergedMessageRefByTurnIndex.values());
-    nextSource.messageRefs.sort((left, right) => left.metadata.turnIndex - right.metadata.turnIndex);
-
-    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>();
-    for (const messageRef of nextSource.messageRefs) {
-      const previousSource = stored.timestampSourceByMessageId.get(messageRef.id);
-      if (previousSource !== undefined) {
-        nextTimestampSourceByMessageId.set(messageRef.id, previousSource);
-      }
-    }
-
-    this.persistSource(source.conversation.id, nextSource, nextTimestampSourceByMessageId);
+    this.sourceByConversationId.set(conversationId, {
+      source: nextSource,
+      timestampSourceByMessageId: nextTimestampSourceByMessageId
+    });
   }
 
   async listByConversationId(conversationId: MapHackConversationId): Promise<MessageRef[]> {
@@ -169,24 +73,7 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
     if (!stored) {
       return [];
     }
-
     return stored.source.messageRefs.map(cloneMessageRef);
-  }
-
-  async countUnresolvedByConversationId(conversationId: MapHackConversationId): Promise<number> {
-    const stored = this.sourceByConversationId.get(conversationId);
-    if (!stored) {
-      return 0;
-    }
-
-    let unresolvedCount = 0;
-    for (const messageRef of stored.source.messageRefs) {
-      if (messageRef.timestamp === null) {
-        unresolvedCount += 1;
-      }
-    }
-
-    return unresolvedCount;
   }
 
   async apply(
@@ -199,42 +86,46 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       return;
     }
 
-    const nextSource = cloneSource(stored.source);
-    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>(
-      stored.timestampSourceByMessageId
-    );
-    const messageRefById = new Map<MessageRef["id"], MessageRef>();
-    for (const messageRef of nextSource.messageRefs) {
-      messageRefById.set(messageRef.id, messageRef);
-    }
-
-    let hasAppliedUpdate = false;
-
+    const effectiveMappings: TimestampMapping[] = [];
     for (const mapping of mappings) {
       if (mapping.timestamp === null) {
         continue;
       }
 
-      const messageRef = messageRefById.get(mapping.messageId as MessageRef["id"]);
-      if (!messageRef) {
+      const currentSource = stored.timestampSourceByMessageId.get(
+        mapping.messageId as MessageRef["id"]
+      );
+      const currentRef = stored.source.messageRefs.find(
+        (ref) => ref.id === (mapping.messageId as MessageRef["id"])
+      );
+
+      if (currentRef && currentRef.timestamp === mapping.timestamp && currentSource === source) {
         continue;
       }
 
-      const currentSource = nextTimestampSourceByMessageId.get(messageRef.id);
-
-      if (messageRef.timestamp === mapping.timestamp && currentSource === source) {
-        continue;
-      }
-
-      messageRef.timestamp = mapping.timestamp;
-      nextTimestampSourceByMessageId.set(messageRef.id, source);
-      hasAppliedUpdate = true;
+      effectiveMappings.push(mapping);
     }
 
-    if (!hasAppliedUpdate) {
+    if (effectiveMappings.length === 0) {
       return;
     }
 
-    this.persistSource(conversationId, nextSource, nextTimestampSourceByMessageId);
+    const nextSource = cloneSource(stored.source);
+    const result = applyTimestampMappings(nextSource, effectiveMappings);
+    if (result === null) {
+      return;
+    }
+
+    const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>(
+      stored.timestampSourceByMessageId
+    );
+    for (const messageId of result.appliedMessageIds) {
+      nextTimestampSourceByMessageId.set(messageId as MessageRef["id"], source);
+    }
+
+    this.sourceByConversationId.set(conversationId, {
+      source: result.updated,
+      timestampSourceByMessageId: nextTimestampSourceByMessageId
+    });
   }
 }

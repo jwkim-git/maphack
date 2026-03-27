@@ -13,5 +13,6 @@ export interface MessageRef {
   metadata: {
     originalId: string;
     turnIndex: number;
+    turnIndexSource: "primary" | "fallback";
   };
 }

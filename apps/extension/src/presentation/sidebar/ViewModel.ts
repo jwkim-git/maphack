@@ -3,25 +3,23 @@ import type {
   TurnNavigator
 } from "../../application/ports/TurnNavigator";
 import type {
-  SidebarRuntimeGateway,
+  SidebarGateway,
   SourceUpdatedSignal
-} from "../../infra/messaging/sidebarRuntimeGateway";
-import type {
-  RuntimeBookmark,
-  RuntimeMessageRef
-} from "../../infra/messaging/runtimeBridge";
+} from "../../application/ports/SidebarGateway";
+import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
+import type { Bookmark } from "../../../../../packages/core/src/domain/entities/Bookmark";
 
 export type SidebarTab = "base" | "bookmarks";
 
 export interface SidebarBaseTabState {
   conversationId: string | null;
-  messages: RuntimeMessageRef[];
+  messages: MessageRef[];
   loading: boolean;
   error: string | null;
 }
 
 export interface SidebarBookmarksTabState {
-  items: RuntimeBookmark[];
+  items: Bookmark[];
   loading: boolean;
   error: string | null;
 }
@@ -33,6 +31,9 @@ export interface SidebarViewState {
 }
 
 type StateListener = (state: SidebarViewState) => void;
+type ReadActiveConversationId = () => string | null;
+type SubscribeActiveConversationContextInvalidation =
+  (onInvalidate: () => void) => () => void;
 type BaseReloadOutcome = "applied" | "skipped_due_to_navigation" | "source_missing" | "failed";
 type BookmarkListReloadOutcome = "applied" | "failed";
 
@@ -43,8 +44,6 @@ const LIST_BASE_RETRYABLE_ERRORS = new Set([
 ]);
 const STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS = [300, 500, 800, 1_200, 2_000, 3_000] as const;
 const SOURCE_UPDATE_RETRY_DELAY_MS = 500;
-const CHATGPT_CONVERSATION_PATH_PATTERN =
-  /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
 
 export class SidebarViewModel {
   private state: SidebarViewState = {
@@ -67,7 +66,7 @@ export class SidebarViewModel {
   private readonly pendingSeqByConversationId = new Map<string, number>();
   private activeSourceUpdateSessionId: string | null = null;
   private unsubscribeSourceUpdated: (() => void) | null = null;
-  private unsubscribeLocationChanges: (() => void) | null = null;
+  private unsubscribeActiveConversationContextInvalidation: (() => void) | null = null;
   private reloadBaseInFlight: Promise<BaseReloadOutcome> | null = null;
   private reloadBaseConversationIdInFlight: string | null = null;
   private reloadBookmarksInFlight: Promise<BookmarkListReloadOutcome> | null = null;
@@ -78,8 +77,11 @@ export class SidebarViewModel {
   private disposed = false;
 
   constructor(
-    private readonly runtimeGateway: SidebarRuntimeGateway,
-    private readonly turnNavigator: TurnNavigator
+    private readonly gateway: SidebarGateway,
+    private readonly turnNavigator: TurnNavigator,
+    private readonly readActiveConversationId: ReadActiveConversationId,
+    private readonly subscribeActiveConversationContextInvalidation:
+      SubscribeActiveConversationContextInvalidation
   ) {}
 
   subscribe(listener: StateListener): () => void {
@@ -119,19 +121,28 @@ export class SidebarViewModel {
     }
 
     if (this.unsubscribeSourceUpdated === null) {
-      this.unsubscribeSourceUpdated = this.runtimeGateway.subscribeSourceUpdated(
+      this.unsubscribeSourceUpdated = this.gateway.subscribeSourceUpdated(
         (signal) => {
           this.onSourceUpdated(signal);
         }
       );
     }
 
-    if (this.unsubscribeLocationChanges === null) {
-      this.unsubscribeLocationChanges = this.observeLocationChanges();
+    if (this.unsubscribeActiveConversationContextInvalidation === null) {
+      this.unsubscribeActiveConversationContextInvalidation =
+        this.subscribeActiveConversationContextInvalidation(() => {
+          if (this.disposed) {
+            return;
+          }
+
+          void this.reconcileActiveConversation().catch((error: unknown) => {
+            console.error("active-conversation-reconcile-failed", error);
+          });
+        });
     }
 
     await this.reloadBookmarks();
-    await this.reconcileActiveConversationFromLocation();
+    await this.reconcileActiveConversation();
   }
 
   setActiveTab(tab: SidebarTab): void {
@@ -150,8 +161,8 @@ export class SidebarViewModel {
     this.clearScheduledSourceUpdateDrain();
     this.unsubscribeSourceUpdated?.();
     this.unsubscribeSourceUpdated = null;
-    this.unsubscribeLocationChanges?.();
-    this.unsubscribeLocationChanges = null;
+    this.unsubscribeActiveConversationContextInvalidation?.();
+    this.unsubscribeActiveConversationContextInvalidation = null;
     this.listeners.clear();
   }
 
@@ -165,13 +176,13 @@ export class SidebarViewModel {
     await this.loadBookmarks();
   }
 
-  async addBookmark(messageRef: RuntimeMessageRef): Promise<boolean> {
+  async addBookmark(messageRef: MessageRef): Promise<boolean> {
     if (this.disposed) {
       return false;
     }
 
     this.patchBookmarkState({ loading: true, error: null });
-    const result = await this.runtimeGateway.addBookmark(messageRef);
+    const result = await this.gateway.addBookmark(messageRef);
 
     if (!result.ok) {
       this.patchBookmarkState({ loading: false, error: result.error });
@@ -189,7 +200,7 @@ export class SidebarViewModel {
     }
 
     this.patchBookmarkState({ loading: true, error: null });
-    const result = await this.runtimeGateway.removeBookmark(bookmarkId);
+    const result = await this.gateway.removeBookmark(bookmarkId);
 
     if (!result.ok) {
       this.patchBookmarkState({ loading: false, error: result.error });
@@ -201,12 +212,12 @@ export class SidebarViewModel {
     return true;
   }
 
-  isBaseMessageBookmarked(messageRef: RuntimeMessageRef): boolean {
+  isBaseMessageBookmarked(messageRef: MessageRef): boolean {
     return this.findExactBookmarkForMessage(messageRef) !== null;
   }
 
-  onBaseRowClick(messageRef: RuntimeMessageRef): void {
-    const activeConversationId = this.resolveActiveConversationIdFromLocation();
+  onBaseRowClick(messageRef: MessageRef): void {
+    const activeConversationId = this.readActiveConversationId();
     if (activeConversationId !== messageRef.conversationId) {
       return;
     }
@@ -224,14 +235,14 @@ export class SidebarViewModel {
     );
   }
 
-  onBookmarkRowClick(bookmark: RuntimeBookmark): void {
+  onBookmarkRowClick(bookmark: Bookmark): void {
     const target = this.createTurnNavigationTarget(
       bookmark.conversationId,
       bookmark.conversationUrl,
       bookmark.messageId,
       bookmark.turnIndex
     );
-    const activeConversationId = this.resolveActiveConversationIdFromLocation();
+    const activeConversationId = this.readActiveConversationId();
 
     if (activeConversationId === bookmark.conversationId) {
       this.runTurnNavigation(
@@ -247,7 +258,7 @@ export class SidebarViewModel {
     );
   }
 
-  async onBaseBookmarkToggle(messageRef: RuntimeMessageRef): Promise<boolean> {
+  async onBaseBookmarkToggle(messageRef: MessageRef): Promise<boolean> {
     const existingBookmark = this.findExactBookmarkForMessage(messageRef);
     if (existingBookmark) {
       return this.removeBookmark(existingBookmark.id);
@@ -256,7 +267,7 @@ export class SidebarViewModel {
     return this.addBookmark(messageRef);
   }
 
-  async onBookmarkToggle(bookmark: RuntimeBookmark): Promise<boolean> {
+  async onBookmarkToggle(bookmark: Bookmark): Promise<boolean> {
     return this.removeBookmark(bookmark.id);
   }
 
@@ -303,7 +314,7 @@ export class SidebarViewModel {
     };
   }
 
-  private findExactBookmarkForMessage(messageRef: RuntimeMessageRef): RuntimeBookmark | null {
+  private findExactBookmarkForMessage(messageRef: MessageRef): Bookmark | null {
     return (
       this.state.bookmarks.items.find(
         (bookmark) =>
@@ -328,21 +339,12 @@ export class SidebarViewModel {
     });
   }
 
-  private resolveActiveConversationIdFromLocation(): string | null {
-    if (typeof window === "undefined") {
-      return null;
+  private async reconcileActiveConversation(): Promise<void> {
+    if (this.disposed) {
+      return;
     }
 
-    const match = window.location.pathname.match(CHATGPT_CONVERSATION_PATH_PATTERN);
-    if (!match) {
-      return null;
-    }
-
-    return `mh-conv-${match[1].toLowerCase()}`;
-  }
-
-  private async reconcileActiveConversationFromLocation(): Promise<void> {
-    const activeConversationId = this.resolveActiveConversationIdFromLocation();
+    const activeConversationId = this.readActiveConversationId();
     if (this.state.base.conversationId === activeConversationId) {
       return;
     }
@@ -355,79 +357,6 @@ export class SidebarViewModel {
 
     await this.loadBaseMessages(activeConversationId);
     void this.recoverInitialBaseIfEmpty(activeConversationId);
-  }
-
-  private observeLocationChanges(): () => void {
-    if (
-      typeof window === "undefined" ||
-      typeof window.addEventListener !== "function" ||
-      typeof document === "undefined"
-    ) {
-      return () => {};
-    }
-
-    let lastPathname = window.location.pathname;
-    let reconcileQueued = false;
-
-    const requestReconcile = (): void => {
-      if (reconcileQueued || this.disposed) {
-        return;
-      }
-
-      reconcileQueued = true;
-      setTimeout(() => {
-        reconcileQueued = false;
-        if (this.disposed) {
-          return;
-        }
-
-        const nextPathname = window.location.pathname;
-        if (nextPathname === lastPathname) {
-          return;
-        }
-
-        lastPathname = nextPathname;
-        void this.reconcileActiveConversationFromLocation().catch((error: unknown) => {
-          console.error("location-reconcile-failed", error);
-        });
-      }, 0);
-    };
-
-    const observeTarget = document.body ?? document.documentElement;
-    const observer =
-      typeof MutationObserver === "function" && observeTarget
-        ? new MutationObserver(() => {
-            requestReconcile();
-          })
-        : null;
-    observer?.observe(observeTarget, {
-      subtree: true,
-      childList: true,
-      characterData: true
-    });
-
-    const onFocus = (): void => {
-      requestReconcile();
-    };
-    const onPopState = (): void => {
-      requestReconcile();
-    };
-    const onVisibilityChange = (): void => {
-      if (document.visibilityState === "visible") {
-        requestReconcile();
-      }
-    };
-
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("popstate", onPopState);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("popstate", onPopState);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
   }
 
   private syncBaseStateToActiveConversation(activeConversationId: string | null): void {
@@ -570,7 +499,7 @@ export class SidebarViewModel {
       return;
     }
 
-    const startedActiveConversationId = this.resolveActiveConversationIdFromLocation();
+    const startedActiveConversationId = this.readActiveConversationId();
     this.syncBaseStateToActiveConversation(startedActiveConversationId);
 
     let baseReloadOutcome: BaseReloadOutcome = "skipped_due_to_navigation";
@@ -583,7 +512,7 @@ export class SidebarViewModel {
     }
 
     const bookmarkListOutcome = await this.loadBookmarks();
-    const finalActiveConversationId = this.resolveActiveConversationIdFromLocation();
+    const finalActiveConversationId = this.readActiveConversationId();
     this.syncBaseStateToActiveConversation(finalActiveConversationId);
 
     if (bookmarkListOutcome === "failed") {
@@ -621,7 +550,7 @@ export class SidebarViewModel {
 
   private async recoverInitialBaseIfEmpty(conversationId: string): Promise<void> {
     for (const delayMs of STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS) {
-      if (this.disposed || this.resolveActiveConversationIdFromLocation() !== conversationId) {
+      if (this.disposed || this.readActiveConversationId() !== conversationId) {
         return;
       }
 
@@ -631,7 +560,7 @@ export class SidebarViewModel {
 
       await this.wait(delayMs);
 
-      if (this.disposed || this.resolveActiveConversationIdFromLocation() !== conversationId) {
+      if (this.disposed || this.readActiveConversationId() !== conversationId) {
         return;
       }
 
@@ -650,7 +579,7 @@ export class SidebarViewModel {
     return (
       !this.disposed &&
       this.state.base.conversationId === conversationId &&
-      this.resolveActiveConversationIdFromLocation() === conversationId
+      this.readActiveConversationId() === conversationId
     );
   }
 
@@ -687,9 +616,9 @@ export class SidebarViewModel {
         return "skipped_due_to_navigation";
       }
 
-      const result = await this.runtimeGateway.listBaseMessages(conversationId);
+      const result = await this.gateway.listBaseMessages(conversationId);
       if (!this.canApplyBaseReloadResult(conversationId)) {
-        this.syncBaseStateToActiveConversation(this.resolveActiveConversationIdFromLocation());
+        this.syncBaseStateToActiveConversation(this.readActiveConversationId());
         return "skipped_due_to_navigation";
       }
 
@@ -724,7 +653,7 @@ export class SidebarViewModel {
   private async reloadBookmarksInternal(): Promise<BookmarkListReloadOutcome> {
     const mutationRevisionAtRequestStart = this.bookmarkMutationRevision;
     this.patchBookmarkState({ loading: true, error: null });
-    const result = await this.runtimeGateway.listBookmarks();
+    const result = await this.gateway.listBookmarks();
 
     if (mutationRevisionAtRequestStart !== this.bookmarkMutationRevision) {
       this.patchBookmarkState({ loading: false, error: null });
@@ -744,7 +673,7 @@ export class SidebarViewModel {
     return "applied";
   }
 
-  private applyBookmarkAdded(bookmark: RuntimeBookmark): void {
+  private applyBookmarkAdded(bookmark: Bookmark): void {
     this.bookmarkMutationRevision += 1;
     const nextBookmark = { ...bookmark };
     const remaining = this.state.bookmarks.items.filter((item) => item.id !== nextBookmark.id);

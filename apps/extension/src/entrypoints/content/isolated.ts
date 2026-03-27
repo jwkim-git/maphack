@@ -1,6 +1,6 @@
 import { bindIsolatedSyncLoop } from "./isolatedSyncLoop";
+import { bootstrapSourceSyncState } from "../../application/sourceSync/state";
 import {
-  bootstrapSourceSyncState,
   relayMainTimestampPayload,
   syncResolvedConversationSource,
   type CaptureResult,
@@ -94,7 +94,6 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
     try {
       const result = await syncResolvedConversationSource({
         hostname: window.location.hostname,
-        conversationUrl: window.location.href,
         root: document,
         sendRuntimeMessage,
         postMainMessage,

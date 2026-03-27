@@ -21789,6 +21789,52 @@
     };
   }
 
+  // packages/core/src/domain/value/MapHackMessageId.ts
+  var MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
+  function toMapHackMessageId(originalId) {
+    return `mh-msg-${originalId}`;
+  }
+  function toOriginalMessageId(messageId) {
+    return messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
+  }
+  function isMapHackMessageId(value) {
+    return value.startsWith(MAPHACK_MESSAGE_ID_PREFIX);
+  }
+
+  // apps/extension/src/application/sourceSync/state.ts
+  function bootstrapSourceSyncState() {
+    return {
+      activeConversationId: null,
+      requestStateByMessageId: /* @__PURE__ */ new Map(),
+      previousMessageIdByTurnIndex: /* @__PURE__ */ new Map(),
+      hasInitialSnapshotCaptured: false,
+      lastCommittedConversationId: null,
+      lastCommittedScopeIds: /* @__PURE__ */ new Set(),
+      transitionRetryAt: null,
+      pendingTimestampRequests: /* @__PURE__ */ new Map()
+    };
+  }
+  function resetConversationSyncState(state) {
+    state.requestStateByMessageId.clear();
+    state.previousMessageIdByTurnIndex.clear();
+    state.hasInitialSnapshotCaptured = false;
+    state.transitionRetryAt = null;
+    state.pendingTimestampRequests.clear();
+  }
+  function syncConversationIdState(nextConversationId, state) {
+    if (state.activeConversationId === nextConversationId) {
+      return;
+    }
+    state.activeConversationId = nextConversationId;
+    resetConversationSyncState(state);
+  }
+  function isTrackedMessageId(value) {
+    return isMapHackMessageId(value);
+  }
+  function createRuntimeRequestId(scope) {
+    return `mh-req:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   // apps/extension/src/infra/messaging/timestampPayload.ts
   var TIMESTAMP_PAYLOAD_TYPE = "MAPHACK_TIMESTAMPS";
   var TIMESTAMP_PAYLOAD_SIGNATURE = "MAPHACK_TIMESTAMP_V1";
@@ -21987,7 +22033,7 @@
     if (!isObject2(value.metadata)) {
       return false;
     }
-    return typeof value.metadata.originalId === "string" && typeof value.metadata.turnIndex === "number";
+    return typeof value.metadata.originalId === "string" && typeof value.metadata.turnIndex === "number" && (value.metadata.turnIndexSource === "primary" || value.metadata.turnIndexSource === "fallback");
   }
   function isRuntimeConversation(value) {
     if (!isObject2(value)) {
@@ -22136,7 +22182,24 @@
       conversationUrl: ref.conversationUrl,
       metadata: {
         originalId: ref.metadata.originalId,
-        turnIndex: ref.metadata.turnIndex
+        turnIndex: ref.metadata.turnIndex,
+        turnIndexSource: ref.metadata.turnIndexSource
+      }
+    };
+  }
+  function toDomainMessageRef(ref) {
+    return {
+      id: ref.id,
+      conversationId: ref.conversationId,
+      role: ref.role,
+      preview: ref.preview,
+      timestamp: ref.timestamp,
+      platform: ref.platform,
+      conversationUrl: ref.conversationUrl,
+      metadata: {
+        originalId: ref.metadata.originalId,
+        turnIndex: ref.metadata.turnIndex,
+        turnIndexSource: ref.metadata.turnIndexSource
       }
     };
   }
@@ -22161,41 +22224,56 @@
       timestamp: item.createTime
     }));
   }
+  function toDomainBookmark(bookmark) {
+    return {
+      id: bookmark.id,
+      conversationId: bookmark.conversationId,
+      messageId: bookmark.messageId,
+      timestamp: bookmark.timestamp,
+      turnIndex: bookmark.turnIndex,
+      messagePreview: bookmark.messagePreview,
+      messageRole: bookmark.messageRole,
+      conversationUrl: bookmark.conversationUrl,
+      platform: bookmark.platform,
+      createdAt: bookmark.createdAt,
+      edited: bookmark.edited
+    };
+  }
 
   // apps/extension/src/infra/providers/chatgpt/selectors.ts
   var CHATGPT_MESSAGE_CONTAINER_PRIMARY = "[data-message-id]";
   var CHATGPT_MESSAGE_CONTAINER_FALLBACKS = [
-    'article[data-testid^="conversation-turn-"]',
-    "article[data-turn]"
+    '[data-testid^="conversation-turn-"]',
+    "[data-turn]"
   ];
   var CHATGPT_SCROLL_CONTAINER_PRIMARY = "[data-scroll-root]";
 
   // apps/extension/src/infra/providers/chatgpt/turnIndex.ts
-  var CHATGPT_TURN_INDEX_ARTICLE_SELECTOR = "article";
-  var CHATGPT_TURN_INDEX_ARTICLE_TEST_ID_ATTRIBUTE = "data-testid";
+  var CHATGPT_TURN_CONTAINER_SELECTOR = '[data-testid^="conversation-turn-"]';
+  var CHATGPT_TURN_CONTAINER_TEST_ID_ATTRIBUTE = "data-testid";
   var CHATGPT_TURN_INDEX_DESCENDANT_SELECTOR = '[data-testid^="conversation-turn-"]';
   var CHATGPT_TURN_INDEX_DESCENDANT_TEST_ID_ATTRIBUTE = "data-testid";
   var CHATGPT_TURN_INDEX_TEST_ID_PATTERN = /conversation-turn-(\d+)/;
-  var MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
   function normalizeAttribute(value) {
     return value?.trim() ?? "";
   }
-  function toOriginalMessageId(messageId) {
-    if (!messageId.startsWith(MAPHACK_MESSAGE_ID_PREFIX)) {
+  function toOriginalId(messageId) {
+    if (!isMapHackMessageId(messageId)) {
       return messageId.length > 0 ? messageId : null;
     }
-    const originalId = messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
+    const originalId = toOriginalMessageId(messageId);
     return originalId.length > 0 ? originalId : null;
   }
-  function parseChatgptTurnIndexFromElement(element, fallbackIndex) {
-    const fromArticle = normalizeAttribute(
-      element.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR)?.getAttribute(
-        CHATGPT_TURN_INDEX_ARTICLE_TEST_ID_ATTRIBUTE
+  var RADIX_DECIMAL = 10;
+  function parsePrimaryTurnIndex(element) {
+    const fromContainer = normalizeAttribute(
+      element.closest(CHATGPT_TURN_CONTAINER_SELECTOR)?.getAttribute(
+        CHATGPT_TURN_CONTAINER_TEST_ID_ATTRIBUTE
       )
     );
-    const articleMatch = fromArticle.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
-    if (articleMatch) {
-      return Number.parseInt(articleMatch[1], 10);
+    const containerMatch = fromContainer.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
+    if (containerMatch) {
+      return Number.parseInt(containerMatch[1], RADIX_DECIMAL);
     }
     const descendant = element.querySelector(CHATGPT_TURN_INDEX_DESCENDANT_SELECTOR);
     const fromDescendant = normalizeAttribute(
@@ -22203,9 +22281,16 @@
     );
     const descendantMatch = fromDescendant.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
     if (descendantMatch) {
-      return Number.parseInt(descendantMatch[1], 10);
+      return Number.parseInt(descendantMatch[1], RADIX_DECIMAL);
     }
-    return fallbackIndex;
+    return null;
+  }
+  function parseChatgptTurnIndexFromElement(element, fallbackIndex) {
+    const primary = parsePrimaryTurnIndex(element);
+    if (primary !== null) {
+      return { value: primary, source: "primary" };
+    }
+    return { value: fallbackIndex, source: "fallback" };
   }
   function findChatgptTurnElementByTurnIndex(root, turnIndex) {
     const selectors = [
@@ -22220,66 +22305,62 @@
           continue;
         }
         seen.add(candidate);
-        if (parseChatgptTurnIndexFromElement(candidate, -1) !== turnIndex) {
+        if (parsePrimaryTurnIndex(candidate) !== turnIndex) {
           continue;
         }
-        return candidate.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR) ?? candidate;
+        return candidate.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? candidate;
       }
     }
     return null;
   }
   function findChatgptTurnElementByMessageId(root, messageId) {
-    const originalMessageId = toOriginalMessageId(messageId);
+    const originalMessageId = toOriginalId(messageId);
     if (!originalMessageId) {
       return null;
     }
-    const exactMessageElement = root.querySelector(`[data-message-id="${originalMessageId}"]`) ?? root.querySelector(`[data-turn-id="${originalMessageId}"]`);
+    const exactMessageElement = root.querySelector(`[data-message-id="${originalMessageId}"]`);
     if (!exactMessageElement) {
       return null;
     }
-    return exactMessageElement.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR) ?? exactMessageElement;
+    return exactMessageElement.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? exactMessageElement;
   }
 
   // apps/extension/src/infra/providers/chatgpt/domParser.ts
   var CHATGPT_MESSAGE_REF_TIMESTAMP_DEFAULT = null;
   var CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
     fields: {
-      conversationId: {
-        primarySource: "conversation-url",
-        fallbackSources: ["location-pathname", "canonical-href"],
-        canonicalSelector: 'link[rel="canonical"]',
-        uuidPathPattern: /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/
-      },
       messageId: {
         primaryAttribute: "data-message-id",
         descendantSelector: "[data-message-id]",
-        descendantAttribute: "data-message-id",
-        fallbackAttribute: "data-turn-id"
+        descendantAttribute: "data-message-id"
       },
       turnIndex: {
         fallbackPolicy: "node-list-index"
       },
       role: {
-        articleSelector: "article",
-        articleTestIdAttribute: "data-testid",
-        articleContainsByRole: {
-          user: "user",
-          assistant: "assistant"
-        },
-        fallbackAttributes: ["data-message-author-role", "data-turn"]
+        turnContainerSelector: '[data-testid^="conversation-turn-"]',
+        primaryAttribute: "data-message-author-role",
+        fallbackTurnAttribute: "data-turn"
       },
       content: {
         user: {
           primary: "div.whitespace-pre-wrap",
-          fallbacks: [".whitespace-pre-wrap", 'article[data-turn="user"]']
+          fallbacks: [".whitespace-pre-wrap", '[data-turn="user"]']
         },
         assistant: {
           primary: "div.markdown",
-          fallbacks: [".markdown", 'article[data-turn="assistant"]']
+          fallbacks: [".markdown", '[data-turn="assistant"]']
         }
       },
       assistantGeneration: {
         stopButtonSelector: 'button[data-testid="stop-button"]'
+      },
+      mediaFallback: {
+        imageSelector: "img[src]",
+        labels: {
+          image: "[Image]",
+          attachment: "[Attachment]"
+        }
       }
     },
     derived: {
@@ -22295,80 +22376,15 @@
     }
     return value.trim();
   }
-  function extractConversationOriginalId(value, pattern) {
-    const normalized = normalizeText(value);
-    if (normalized.length === 0) {
-      return null;
-    }
-    const match = normalized.match(pattern);
-    if (!match) {
-      return null;
-    }
-    return normalizeText(match[1]).toLowerCase();
-  }
-  function resolveConversationOriginalId(root, conversationUrl, strategy) {
-    if (strategy.primarySource === "conversation-url") {
-      const fromUrl = extractConversationOriginalId(conversationUrl, strategy.uuidPathPattern);
-      if (fromUrl !== null) {
-        return fromUrl;
-      }
-    }
-    for (const source of strategy.fallbackSources) {
-      if (source === "location-pathname") {
-        const pathname = normalizeText(root.location?.pathname ?? "");
-        const fromPath = extractConversationOriginalId(pathname, strategy.uuidPathPattern);
-        if (fromPath !== null) {
-          return fromPath;
-        }
-        continue;
-      }
-      if (source === "canonical-href") {
-        const canonicalHref = normalizeText(
-          root.querySelector(strategy.canonicalSelector)?.href
-        );
-        const fromCanonical = extractConversationOriginalId(canonicalHref, strategy.uuidPathPattern);
-        if (fromCanonical !== null) {
-          return fromCanonical;
-        }
-      }
-    }
-    return null;
-  }
-  function resolveChatgptConversationOriginalId(input) {
-    return resolveConversationOriginalId(
-      input.root,
-      input.conversationUrl,
-      CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY.fields.conversationId
-    );
-  }
-  function resolveConversationUrl(root, conversationUrl, strategy) {
-    const fromInput = normalizeText(conversationUrl);
-    if (fromInput.length > 0) {
-      return fromInput;
-    }
-    const fromLocationHref = normalizeText(root.location?.href ?? "");
-    if (fromLocationHref.length > 0) {
-      return fromLocationHref;
-    }
-    return normalizeText(root.querySelector(strategy.canonicalSelector)?.href);
-  }
   function parseRoleFromElement(element, strategy) {
-    const article = element.closest(strategy.articleSelector);
-    const articleTestId = normalizeText(article?.getAttribute(strategy.articleTestIdAttribute));
-    if (articleTestId.includes(strategy.articleContainsByRole.assistant)) {
-      return "assistant";
+    const primary = normalizeText(element.getAttribute(strategy.primaryAttribute));
+    if (primary === "assistant" || primary === "user") {
+      return primary;
     }
-    if (articleTestId.includes(strategy.articleContainsByRole.user)) {
-      return "user";
-    }
-    for (const attribute of strategy.fallbackAttributes) {
-      const selfValue = normalizeText(element.getAttribute(attribute));
-      if (selfValue === strategy.articleContainsByRole.assistant) {
-        return "assistant";
-      }
-      if (selfValue === strategy.articleContainsByRole.user) {
-        return "user";
-      }
+    const turnContainer = element.closest(strategy.turnContainerSelector);
+    const turnContainerRole = normalizeText(turnContainer?.getAttribute(strategy.fallbackTurnAttribute));
+    if (turnContainerRole === "assistant" || turnContainerRole === "user") {
+      return turnContainerRole;
     }
     return null;
   }
@@ -22381,10 +22397,6 @@
     const descendantId = normalizeText(descendant?.getAttribute(strategy.descendantAttribute));
     if (descendantId.length > 0) {
       return descendantId;
-    }
-    const fallback = normalizeText(element.getAttribute(strategy.fallbackAttribute));
-    if (fallback.length > 0) {
-      return fallback;
     }
     return null;
   }
@@ -22399,26 +22411,21 @@
     }
     return normalizeText(element.textContent);
   }
+  function detectMediaPreview(element, strategy) {
+    if (element.querySelector(strategy.imageSelector)) {
+      return strategy.labels.image;
+    }
+    return strategy.labels.attachment;
+  }
   function hasActiveAssistantGenerationSignal(root, strategy) {
     return root.querySelector(strategy.stopButtonSelector) !== null;
   }
   function collectChatgptSourceData(input) {
     const strategy = CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY;
     const messageElements = input.captureScope.messageContainers;
-    const conversationOriginalId = resolveConversationOriginalId(
-      input.root,
-      input.conversationUrl,
-      strategy.fields.conversationId
-    );
-    if (!conversationOriginalId) {
-      return null;
-    }
-    const conversationId = `mh-conv-${conversationOriginalId}`;
-    const resolvedConversationUrl = resolveConversationUrl(
-      input.root,
-      input.conversationUrl,
-      strategy.fields.conversationId
-    );
+    const conversationOriginalId = input.conversation.originalId;
+    const conversationId = input.conversation.id;
+    const resolvedConversationUrl = input.conversation.url;
     const messageRefs = [];
     const assistantGenerationActive = hasActiveAssistantGenerationSignal(
       input.root,
@@ -22439,13 +22446,10 @@
         continue;
       }
       const content = parseContent(element, role, strategy.fields.content);
-      if (role === "assistant" && content.length === 0) {
-        continue;
-      }
-      const preview = content.slice(0, strategy.derived.previewMaxLength);
-      const turnIndex = parseChatgptTurnIndexFromElement(element, index);
+      const preview = content.length > 0 ? content.slice(0, strategy.derived.previewMaxLength) : detectMediaPreview(element, strategy.fields.mediaFallback);
+      const parsedTurnIndex = parseChatgptTurnIndexFromElement(element, index);
       messageRefs.push({
-        id: `mh-msg-${originalId}`,
+        id: toMapHackMessageId(originalId),
         conversationId,
         role,
         preview,
@@ -22454,7 +22458,8 @@
         conversationUrl: resolvedConversationUrl,
         metadata: {
           originalId,
-          turnIndex
+          turnIndex: parsedTurnIndex.value,
+          turnIndexSource: parsedTurnIndex.source
         }
       });
     }
@@ -22488,37 +22493,86 @@
     };
   }
 
+  // packages/core/src/domain/value/MapHackConversationId.ts
+  function toMapHackConversationId(originalId) {
+    return `mh-conv-${originalId}`;
+  }
+
+  // apps/extension/src/application/chatgpt/resolveChatgptConversationOriginalId.ts
+  var CHATGPT_CONVERSATION_PATH_PATTERN = /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
+  function normalize(value) {
+    return value?.trim() ?? "";
+  }
+  function extractOriginalId(value) {
+    const normalized = normalize(value);
+    if (normalized.length === 0) {
+      return null;
+    }
+    const match = normalized.match(CHATGPT_CONVERSATION_PATH_PATTERN);
+    return match ? normalize(match[1]).toLowerCase() : null;
+  }
+  function resolveChatgptConversationOriginalId(input) {
+    return extractOriginalId(input.conversationUrl) ?? extractOriginalId(input.pathname) ?? extractOriginalId(input.canonicalHref) ?? null;
+  }
+
+  // apps/extension/src/infra/providers/chatgpt/currentConversation.ts
+  function readCurrentChatgptConversation() {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return null;
+    }
+    const canonicalElement = document.querySelector('link[rel="canonical"]');
+    const canonicalHref = canonicalElement instanceof HTMLLinkElement ? canonicalElement.href : null;
+    const url = window.location.href;
+    const pathname = window.location.pathname;
+    const originalId = resolveChatgptConversationOriginalId({
+      conversationUrl: url,
+      pathname,
+      canonicalHref
+    });
+    if (originalId === null) {
+      return null;
+    }
+    return {
+      id: toMapHackConversationId(originalId),
+      originalId,
+      url
+    };
+  }
+
   // apps/extension/src/infra/providers/chatgpt/threadScope.ts
   function resolveChatgptMessageContainers(root) {
     const fromPrimary = Array.from(root.querySelectorAll(CHATGPT_MESSAGE_CONTAINER_PRIMARY));
     if (fromPrimary.length > 0) {
       return fromPrimary;
     }
+    const hasCommittedMessageDescendant = (element) => element.querySelector(CHATGPT_MESSAGE_CONTAINER_PRIMARY) !== null;
     for (const selector of CHATGPT_MESSAGE_CONTAINER_FALLBACKS) {
-      const fromFallback = Array.from(root.querySelectorAll(selector));
+      const fromFallback = Array.from(root.querySelectorAll(selector)).filter(
+        hasCommittedMessageDescendant
+      );
       if (fromFallback.length > 0) {
         return fromFallback;
       }
     }
     return [];
   }
-  function isRenderedElement(element, root) {
+  function isRenderedElement(element, windowRef) {
     if (!element.isConnected) {
       return false;
     }
     if (element.getClientRects().length === 0) {
       return false;
     }
-    const style = root.defaultView?.getComputedStyle(element);
+    const style = windowRef.getComputedStyle(element);
     if (!style) {
       return true;
     }
     return style.display !== "none" && style.visibility !== "hidden";
   }
-  function resolveClosestOverflowContainer(root, element) {
+  function resolveClosestOverflowContainer(element, windowRef) {
     let current = element.parentElement;
     while (current) {
-      const overflowY = root.defaultView?.getComputedStyle(current).overflowY ?? "";
+      const overflowY = windowRef.getComputedStyle(current).overflowY;
       if (overflowY === "auto" || overflowY === "scroll") {
         return current;
       }
@@ -22526,12 +22580,12 @@
     }
     return null;
   }
-  function resolveChatgptCaptureScope(root) {
+  function resolveChatgptCaptureScope(root, windowRef) {
     const primaryContainers = Array.from(root.querySelectorAll(CHATGPT_SCROLL_CONTAINER_PRIMARY));
     const primaryScopes = primaryContainers.map((container) => ({
       container,
       messageContainers: resolveChatgptMessageContainers(container).filter(
-        (element) => isRenderedElement(element, root)
+        (element) => isRenderedElement(element, windowRef)
       )
     })).filter((scope) => scope.messageContainers.length > 0);
     if (primaryScopes.length === 1) {
@@ -22541,14 +22595,14 @@
       return null;
     }
     const renderedRows = resolveChatgptMessageContainers(root).filter(
-      (element) => isRenderedElement(element, root)
+      (element) => isRenderedElement(element, windowRef)
     );
     if (renderedRows.length === 0) {
       return null;
     }
     const distinctContainers = /* @__PURE__ */ new Set();
     for (const row of renderedRows) {
-      const container = resolveClosestOverflowContainer(root, row);
+      const container = resolveClosestOverflowContainer(row, windowRef);
       if (!container) {
         return null;
       }
@@ -22575,60 +22629,13 @@
     return null;
   }
 
-  // apps/extension/src/entrypoints/content/isolatedSyncRuntime.ts
-  var TIMESTAMP_RETRY_BACKOFF_MS = [1e3, 2e3, 3e3];
-  var TRANSITION_STABILIZATION_RETRY_MS = 120;
-  var TIMESTAMP_REQUEST_TTL_MS = 5e3;
-  var MAPHACK_MESSAGE_ID_PREFIX2 = "mh-msg-";
-  function createRuntimeRequestId(scope) {
-    return `mh-req:${scope}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-  }
-  function bootstrapSourceSyncState() {
-    return {
-      activeConversationId: null,
-      requestStateByMessageId: /* @__PURE__ */ new Map(),
-      previousMessageIdByTurnIndex: /* @__PURE__ */ new Map(),
-      hasInitialSnapshotCaptured: false,
-      lastCommittedConversationId: null,
-      lastCommittedScopeIds: /* @__PURE__ */ new Set(),
-      transitionRetryAt: null,
-      pendingTimestampRequests: /* @__PURE__ */ new Map()
-    };
-  }
-  function resetConversationSyncState(state) {
-    state.requestStateByMessageId.clear();
-    state.previousMessageIdByTurnIndex.clear();
-    state.hasInitialSnapshotCaptured = false;
-    state.transitionRetryAt = null;
-    state.pendingTimestampRequests.clear();
-  }
-  function syncConversationIdState(nextConversationId, state) {
-    if (state.activeConversationId === nextConversationId) {
-      return;
-    }
-    state.activeConversationId = nextConversationId;
-    resetConversationSyncState(state);
-  }
-  function resolveSourceData(hostname, root, conversationUrl, state) {
-    if (resolveProviderIdByHostname(hostname) !== "chatgpt") {
-      return "provider-unsupported";
-    }
-    const conversationOriginalId = resolveChatgptConversationOriginalId({ root, conversationUrl });
-    if (!conversationOriginalId) {
-      return "source-unavailable";
-    }
-    const conversationId = `mh-conv-${conversationOriginalId}`;
-    syncConversationIdState(conversationId, state);
-    const captureScope = resolveChatgptCaptureScope(root);
-    if (!captureScope) {
-      state.transitionRetryAt = Date.now() + TRANSITION_STABILIZATION_RETRY_MS;
-      return "transition-pending";
-    }
-    return collectChatgptSourceData({ root, conversationUrl, captureScope }) ?? "source-unavailable";
-  }
+  // apps/extension/src/application/sourceSync/resolveChangedTurnIndexes.ts
   function resolveMessageIdByTurnIndex(source) {
     const next = /* @__PURE__ */ new Map();
     for (const messageRef of source.messageRefs) {
+      if (messageRef.metadata.turnIndexSource === "fallback") {
+        continue;
+      }
       next.set(messageRef.metadata.turnIndex, messageRef.id);
     }
     return next;
@@ -22666,12 +22673,120 @@
   function selectSourceByMessageIds(source, messageIds) {
     const messageRefs = source.messageRefs.filter((messageRef) => messageIds.has(messageRef.id));
     return {
-      conversation: source.conversation,
+      ...source,
       messageRefs,
       collectionMeta: {
         scopeIds: messageRefs.map((messageRef) => messageRef.metadata.originalId)
       }
     };
+  }
+
+  // apps/extension/src/application/sourceSync/transitionPolicy.ts
+  var TRANSITION_STABILIZATION_RETRY_MS = 120;
+  function hasLastCommittedScopeOverlap(source, state) {
+    if (state.lastCommittedConversationId === source.conversation.id) {
+      return false;
+    }
+    return source.collectionMeta.scopeIds.some((originalId) => state.lastCommittedScopeIds.has(originalId));
+  }
+
+  // apps/extension/src/application/sourceSync/timestampCorrelation.ts
+  var TIMESTAMP_RETRY_BACKOFF_MS = [1e3, 2e3, 3e3];
+  var TIMESTAMP_REQUEST_TTL_MS = 5e3;
+  function resolveNextRetryDelayMs(previous) {
+    const nextAttempt = previous ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1) : 0;
+    return TIMESTAMP_RETRY_BACKOFF_MS[nextAttempt];
+  }
+  function toNextUnresolvedState(now, previous) {
+    const nextAttempt = previous ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1) : 0;
+    return {
+      status: "unresolved",
+      retryAttempt: nextAttempt,
+      retryAt: now + resolveNextRetryDelayMs(previous)
+    };
+  }
+  function toResolvedState() {
+    return {
+      status: "resolved",
+      retryAt: Number.POSITIVE_INFINITY,
+      retryAttempt: 0
+    };
+  }
+  function createTimestampRequestId() {
+    return `mh-ts:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+  }
+  function pruneExpiredTimestampRequests(state, now) {
+    for (const [requestId, request2] of state.pendingTimestampRequests.entries()) {
+      if (request2.expiresAt <= now) {
+        state.pendingTimestampRequests.delete(requestId);
+      }
+    }
+  }
+  function collectPendingMessageIds(state, now) {
+    const pendingIds = /* @__PURE__ */ new Set();
+    for (const request2 of state.pendingTimestampRequests.values()) {
+      if (request2.expiresAt <= now) {
+        continue;
+      }
+      for (const messageId of request2.messageIds) {
+        pendingIds.add(messageId);
+      }
+    }
+    return pendingIds;
+  }
+  function markPayloadSuccessState(payload, state, now) {
+    if (state.activeConversationId !== payload.conversationId) {
+      return;
+    }
+    for (const item of payload.payload) {
+      if (!isTrackedMessageId(item.id)) {
+        continue;
+      }
+      const previous = state.requestStateByMessageId.get(item.id);
+      state.requestStateByMessageId.set(
+        item.id,
+        item.createTime === null ? toNextUnresolvedState(now, previous) : toResolvedState()
+      );
+    }
+  }
+  function markPayloadFailureState(payload, state, now) {
+    if (state.activeConversationId !== payload.conversationId) {
+      return;
+    }
+    for (const item of payload.payload) {
+      if (!isTrackedMessageId(item.id)) {
+        continue;
+      }
+      const previous = state.requestStateByMessageId.get(item.id);
+      state.requestStateByMessageId.set(item.id, toNextUnresolvedState(now, previous));
+    }
+  }
+
+  // apps/extension/src/application/sourceSync/sourceValidityPolicy.ts
+  function isPersistableSource(source) {
+    return source.messageRefs.length > 0;
+  }
+
+  // apps/extension/src/entrypoints/content/isolatedSyncRuntime.ts
+  function resolveSourceData(hostname, root, state) {
+    if (resolveProviderIdByHostname(hostname) !== "chatgpt") {
+      return "provider-unsupported";
+    }
+    const conversation = readCurrentChatgptConversation();
+    if (conversation === null) {
+      return "source-unavailable";
+    }
+    syncConversationIdState(conversation.id, state);
+    const captureScope = resolveChatgptCaptureScope(root, root.defaultView);
+    if (!captureScope) {
+      state.transitionRetryAt = Date.now() + TRANSITION_STABILIZATION_RETRY_MS;
+      return "transition-pending";
+    }
+    return collectChatgptSourceData({
+      root,
+      conversation,
+      captureScope
+    }) ?? "source-unavailable";
   }
   async function captureConversationSource(source, captureMode, sendRuntimeMessage) {
     const requestId = createRuntimeRequestId("capture");
@@ -22699,50 +22814,6 @@
       return response.error === "snapshot-required" ? "snapshot-required" : "capture-failed";
     }
     return "payload-invalid";
-  }
-  function resolveNextRetryDelayMs(previous) {
-    const nextAttempt = previous ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1) : 0;
-    return TIMESTAMP_RETRY_BACKOFF_MS[nextAttempt];
-  }
-  function toNextUnresolvedState(now, previous) {
-    const nextAttempt = previous ? Math.min(previous.retryAttempt + 1, TIMESTAMP_RETRY_BACKOFF_MS.length - 1) : 0;
-    return {
-      status: "unresolved",
-      retryAttempt: nextAttempt,
-      retryAt: now + resolveNextRetryDelayMs(previous)
-    };
-  }
-  function toResolvedState() {
-    return {
-      status: "resolved",
-      retryAt: Number.POSITIVE_INFINITY,
-      retryAttempt: 0
-    };
-  }
-  function isTrackedMessageId(value) {
-    return value.startsWith(MAPHACK_MESSAGE_ID_PREFIX2);
-  }
-  function createTimestampRequestId() {
-    return `mh-ts:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-  }
-  function pruneExpiredTimestampRequests(state, now) {
-    for (const [requestId, request2] of state.pendingTimestampRequests.entries()) {
-      if (request2.expiresAt <= now) {
-        state.pendingTimestampRequests.delete(requestId);
-      }
-    }
-  }
-  function collectPendingMessageIds(state, now) {
-    const pendingIds = /* @__PURE__ */ new Set();
-    for (const request2 of state.pendingTimestampRequests.values()) {
-      if (request2.expiresAt <= now) {
-        continue;
-      }
-      for (const messageId of request2.messageIds) {
-        pendingIds.add(messageId);
-      }
-    }
-    return pendingIds;
   }
   function requestTimestampsFromMain(source, state, postMainMessage, targetOrigin, priorityMessageIds = source.messageRefs.map((messageRef) => messageRef.id)) {
     if (state.activeConversationId !== source.conversation.id) {
@@ -22775,20 +22846,20 @@
     if (messageIds.length === 0) {
       return;
     }
-    const requestId = createTimestampRequestId();
-    const request2 = {
+    const tsRequestId = createTimestampRequestId();
+    const tsRequest = {
       type: TIMESTAMP_PULL_REQUEST_TYPE,
       signature: TIMESTAMP_PULL_REQUEST_SIGNATURE,
       schema: TIMESTAMP_MESSAGE_SCHEMA,
-      requestId,
+      requestId: tsRequestId,
       conversationId: source.conversation.id,
       messageIds
     };
-    if (toTimestampPullRequestMessage(request2) === null) {
+    if (toTimestampPullRequestMessage(tsRequest) === null) {
       return;
     }
-    postMainMessage(request2, targetOrigin);
-    state.pendingTimestampRequests.set(requestId, {
+    postMainMessage(tsRequest, targetOrigin);
+    state.pendingTimestampRequests.set(tsRequestId, {
       conversationId: source.conversation.id,
       messageIds: new Set(messageIds),
       expiresAt: now + TIMESTAMP_REQUEST_TTL_MS
@@ -22798,45 +22869,11 @@
       state.requestStateByMessageId.set(messageId, toNextUnresolvedState(now, previous));
     }
   }
-  function markPayloadSuccessState(payload, state, now) {
-    if (state.activeConversationId !== payload.conversationId) {
-      return;
-    }
-    for (const item of payload.payload) {
-      if (!isTrackedMessageId(item.id)) {
-        continue;
-      }
-      const previous = state.requestStateByMessageId.get(item.id);
-      state.requestStateByMessageId.set(
-        item.id,
-        item.createTime === null ? toNextUnresolvedState(now, previous) : toResolvedState()
-      );
-    }
-  }
-  function markPayloadFailureState(payload, state, now) {
-    if (state.activeConversationId !== payload.conversationId) {
-      return;
-    }
-    for (const item of payload.payload) {
-      if (!isTrackedMessageId(item.id)) {
-        continue;
-      }
-      const previous = state.requestStateByMessageId.get(item.id);
-      state.requestStateByMessageId.set(item.id, toNextUnresolvedState(now, previous));
-    }
-  }
-  function hasLastCommittedScopeOverlap(source, state) {
-    if (state.lastCommittedConversationId === source.conversation.id) {
-      return false;
-    }
-    return source.collectionMeta.scopeIds.some((originalId) => state.lastCommittedScopeIds.has(originalId));
-  }
   async function syncResolvedConversationSource(input) {
     pruneExpiredTimestampRequests(input.state, Date.now());
     const sourceOrResult = resolveSourceData(
       input.hostname,
       input.root,
-      input.conversationUrl,
       input.state
     );
     if (sourceOrResult === "transition-pending") {
@@ -22845,6 +22882,9 @@
     if (typeof sourceOrResult === "string") {
       input.state.transitionRetryAt = null;
       return sourceOrResult;
+    }
+    if (!isPersistableSource(sourceOrResult)) {
+      return "source-unavailable";
     }
     if (!input.state.hasInitialSnapshotCaptured && hasLastCommittedScopeOverlap(sourceOrResult, input.state)) {
       input.state.transitionRetryAt = Date.now() + TRANSITION_STABILIZATION_RETRY_MS;
@@ -22944,22 +22984,26 @@
     if (!isApplyTimestampsRequest(request2)) {
       return "ignored";
     }
+    const tsPayload = {
+      conversationId: timestampPayload.conversationId,
+      payload: timestampPayload.payload
+    };
     let response;
     try {
       response = await input.sendRuntimeMessage(request2);
     } catch {
-      markPayloadFailureState(timestampPayload, input.state, now);
+      markPayloadFailureState(tsPayload, input.state, now);
       return "failed";
     }
     if (isApplyTimestampsSuccess(response) && response.requestId === requestId) {
-      markPayloadSuccessState(timestampPayload, input.state, now);
+      markPayloadSuccessState(tsPayload, input.state, now);
       return "accepted";
     }
     if (isApplyTimestampsFailure(response) && response.requestId === requestId) {
-      markPayloadFailureState(timestampPayload, input.state, now);
+      markPayloadFailureState(tsPayload, input.state, now);
       return "failed";
     }
-    markPayloadFailureState(timestampPayload, input.state, now);
+    markPayloadFailureState(tsPayload, input.state, now);
     return "failed";
   }
 
@@ -23062,10 +23106,12 @@
         if (isListBaseMessagesSuccess(response) && response.requestId === requestId) {
           return {
             ok: true,
-            value: response.messageRefs.map((message) => ({
-              ...message,
-              metadata: { ...message.metadata }
-            }))
+            value: response.messageRefs.map(
+              (message) => toDomainMessageRef({
+                ...message,
+                metadata: { ...message.metadata }
+              })
+            )
           };
         }
         if (isListBaseMessagesFailure(response) && response.requestId === requestId) {
@@ -23087,16 +23133,19 @@
         }
         return {
           ok: true,
-          value: result.value.bookmarks.map((bookmark) => ({ ...bookmark }))
+          value: result.value.bookmarks.map(
+            (bookmark) => toDomainBookmark({ ...bookmark })
+          )
         };
       },
       async addBookmark(messageRef) {
+        const runtimeRef = toRuntimeMessageRef(messageRef);
         const result = await request(
           runtimeApi,
           "add-bookmark",
           (requestId) => createAddBookmarkRequest(requestId, {
-            ...messageRef,
-            metadata: { ...messageRef.metadata }
+            ...runtimeRef,
+            metadata: { ...runtimeRef.metadata }
           }),
           isAddBookmarkSuccess,
           isAddBookmarkFailure,
@@ -23107,9 +23156,7 @@
         }
         return {
           ok: true,
-          value: {
-            ...result.value.bookmark
-          }
+          value: toDomainBookmark({ ...result.value.bookmark })
         };
       },
       async removeBookmark(bookmarkId) {
@@ -23141,11 +23188,11 @@
     ]
   };
   var CHATGPT_PENDING_NAVIGATION_STORAGE_KEY = "maphack:chatgpt-pending-turn-navigation";
-  function resolveClosestOverflowScrollContainer(root, messageContainers) {
+  function resolveClosestOverflowScrollContainer(messageContainers, windowRef) {
     for (const messageElement of messageContainers) {
       let current = messageElement.parentElement;
       while (current) {
-        const overflowY = root.defaultView?.getComputedStyle(current).overflowY ?? "";
+        const overflowY = windowRef.getComputedStyle(current).overflowY;
         if (overflowY === "auto" || overflowY === "scroll") {
           return current;
         }
@@ -23154,7 +23201,7 @@
     }
     return null;
   }
-  function resolveChatgptScrollContainer(root, messageContainers) {
+  function resolveChatgptScrollContainer(root, messageContainers, windowRef) {
     const strategy = CHATGPT_SCROLL_CONTAINER_RESOLUTION_STRATEGY;
     const fromPrimary = root.querySelector(strategy.primary);
     if (fromPrimary) {
@@ -23162,7 +23209,7 @@
     }
     for (const fallback of strategy.fallbacks) {
       if (fallback === "closest-overflow-scroll-container") {
-        const fromClosest = resolveClosestOverflowScrollContainer(root, messageContainers);
+        const fromClosest = resolveClosestOverflowScrollContainer(messageContainers, windowRef);
         if (fromClosest) {
           return fromClosest;
         }
@@ -23227,18 +23274,18 @@
     } catch {
     }
   }
-  function resolveScrollContainerVisibleStartOffset(root, scrollContainer) {
-    const rawValue = root.defaultView?.getComputedStyle(scrollContainer).scrollPaddingTop ?? "";
+  function resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef) {
+    const rawValue = windowRef.getComputedStyle(scrollContainer).scrollPaddingTop;
     const parsedValue = Number.parseFloat(rawValue);
     return Number.isFinite(parsedValue) ? parsedValue : 0;
   }
-  function scrollTurnElementIntoView(root, turnElement) {
-    const scrollContainer = resolveChatgptScrollContainer(root, [turnElement]);
+  function scrollTurnElementIntoView(root, turnElement, windowRef) {
+    const scrollContainer = resolveChatgptScrollContainer(root, [turnElement], windowRef);
     if (!scrollContainer) {
       turnElement.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    const visibleStartOffset = resolveScrollContainerVisibleStartOffset(root, scrollContainer);
+    const visibleStartOffset = resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef);
     const nextTop = scrollContainer.scrollTop + (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) - visibleStartOffset;
     scrollContainer.scrollTo({
       top: nextTop,
@@ -23248,7 +23295,7 @@
   function findChatgptTurnElementByTarget(root, target) {
     return findChatgptTurnElementByMessageId(root, target.messageId) ?? findChatgptTurnElementByTurnIndex(root, target.turnIndex);
   }
-  async function consumePendingTarget(root, storageRef, readyConversationId) {
+  async function consumePendingTarget(root, windowRef, storageRef, readyConversationId) {
     const pendingTarget = readPendingTarget(storageRef);
     if (!pendingTarget) {
       return;
@@ -23260,7 +23307,7 @@
     if (!turnElement) {
       return;
     }
-    scrollTurnElementIntoView(root, turnElement);
+    scrollTurnElementIntoView(root, turnElement, windowRef);
     clearPendingTarget(storageRef);
   }
   function createChatgptTurnNavigator(options) {
@@ -23272,14 +23319,14 @@
         if (!turnElement) {
           return;
         }
-        scrollTurnElementIntoView(documentRef, turnElement);
+        scrollTurnElementIntoView(documentRef, turnElement, windowRef);
       },
       async navigateAcrossConversations(target) {
         writePendingTarget(storageRef, target);
         windowRef.location.assign(target.conversationUrl);
       },
       async consumePendingNavigation(readyConversationId) {
-        await consumePendingTarget(documentRef, storageRef, readyConversationId);
+        await consumePendingTarget(documentRef, windowRef, storageRef, readyConversationId);
       }
     };
   }
@@ -23287,9 +23334,50 @@
   // apps/extension/src/presentation/sidebar/App.tsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
+
+  // apps/extension/src/presentation/sidebar/icons.tsx
   var import_jsx_runtime = __toESM(require_jsx_runtime());
-  function toTimestampLabel(timestamp) {
-    return typeof timestamp === "number" ? String(timestamp) : "unresolved";
+  function IconClose({ size = 20, className }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" }) });
+  }
+  function IconChatBubble({ size = 18, className, filled = false }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: filled ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z" }) });
+  }
+  function IconBookmark({ size = 12, className, filled = false }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: filled ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z" }) });
+  }
+  function IconPerson({ size = 12, className }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" }) });
+  }
+  function IconSmartToy({ size = 12, className }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zM7.5 11.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5S9.83 13 9 13s-1.5-.67-1.5-1.5zM16 17H8v-2h8v2zm-1-4c-.83 0-1.5-.67-1.5-1.5S14.17 10 15 10s1.5.67 1.5 1.5S15.83 13 15 13z" }) });
+  }
+  function IconScrollTop({ size = 18, className }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "currentColor", className, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M8 11h3v10h2V11h3l-4-4-4 4zM4 3v2h16V3H4z" }) });
+  }
+
+  // apps/extension/src/presentation/sidebar/App.tsx
+  var import_jsx_runtime2 = __toESM(require_jsx_runtime());
+  var ASCII_LOGO = [
+    " _____ ______   ________  ________  ___  ___  ________  ________  ___  __       ",
+    "|\\   _ \\  _   \\|\\   __  \\|\\   __  \\|\\  \\|\\  \\|\\   __  \\|\\   ____\\|\\  \\|\\  \\     ",
+    "\\ \\  \\\\\\__\\ \\  \\ \\  \\|\\  \\ \\  \\|\\  \\ \\  \\\\\\  \\ \\  \\|\\  \\ \\  \\___|\\ \\  \\/  /|_   ",
+    " \\ \\  \\\\|__| \\  \\ \\   __  \\ \\   ____\\ \\   __  \\ \\   __  \\ \\  \\    \\ \\   ___  \\  ",
+    "  \\ \\  \\    \\ \\  \\ \\  \\ \\  \\ \\  \\___|\\ \\  \\ \\  \\ \\  \\ \\  \\ \\  \\____\\ \\  \\\\ \\  \\ ",
+    "   \\ \\__\\    \\ \\__\\ \\__\\ \\__\\ \\__\\    \\ \\__\\ \\__\\ \\__\\ \\__\\ \\_______\\ \\__\\\\ \\__\\",
+    "    \\|__|     \\|__|\\|__|\\|__|\\|__|     \\|__|\\|__|\\|__|\\|__|\\|_______|\\|__| \\|__|"
+  ].join("\n");
+  function formatTimestamp(timestamp) {
+    if (typeof timestamp !== "number") {
+      return "";
+    }
+    const date = new Date(timestamp * 1e3);
+    const y = date.getFullYear();
+    const mo = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    const h = String(date.getHours()).padStart(2, "0");
+    const mi = String(date.getMinutes()).padStart(2, "0");
+    return `${y}.${mo}.${d} ${h}:${mi}`;
   }
   function useSidebarState(viewModel) {
     const [state, setState] = (0, import_react.useState)(() => viewModel.getState());
@@ -23298,11 +23386,97 @@
     }, [viewModel]);
     return state;
   }
+  function BookmarkButton({
+    bookmarked,
+    onToggle
+  }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+      "button",
+      {
+        type: "button",
+        className: `mh-bookmark-action${bookmarked ? " mh-bookmark-action-active" : ""}`,
+        "aria-pressed": bookmarked,
+        title: bookmarked ? "Remove bookmark" : "Add bookmark",
+        onClick: (e) => {
+          e.stopPropagation();
+          onToggle();
+        },
+        children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconBookmark, { size: 12, filled: bookmarked })
+      }
+    );
+  }
+  function ChatBubble({
+    messageRef,
+    bookmarked,
+    onRowClick,
+    onBookmarkToggle
+  }) {
+    const isUser = messageRef.role === "user";
+    const ts = formatTimestamp(messageRef.timestamp);
+    const rowClass = isUser ? "mh-bubble-row-user" : "mh-bubble-row-assistant";
+    const bubbleClass = isUser ? bookmarked ? "mh-bubble mh-bubble-user-bookmarked" : "mh-bubble mh-bubble-user" : bookmarked ? "mh-bubble mh-bubble-assistant-bookmarked" : "mh-bubble mh-bubble-assistant";
+    const roleRowClass = isUser ? "mh-role-row mh-role-row-user" : "mh-role-row mh-role-row-assistant";
+    const roleLabelClass = bookmarked ? "mh-role-label mh-role-label-highlighted" : "mh-role-label mh-role-label-default";
+    const roleIconClass = bookmarked ? "mh-role-icon-highlighted" : "mh-role-icon-default";
+    const bodyClass = isUser ? "mh-body-user" : "mh-body-assistant";
+    const footerClass = bookmarked ? "mh-bubble-footer mh-bubble-footer-highlighted" : "mh-bubble-footer mh-bubble-footer-default";
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: rowClass, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: bubbleClass, onClick: onRowClick, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: roleRowClass, children: isUser ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: roleLabelClass, children: "USER" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconPerson, { size: 12, className: roleIconClass })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconSmartToy, { size: 12, className: roleIconClass }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: roleLabelClass, children: "ASSISTANT" })
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: bodyClass, children: messageRef.preview }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: footerClass, children: isUser ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-timestamp", children: ts }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(BookmarkButton, { bookmarked, onToggle: onBookmarkToggle })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(BookmarkButton, { bookmarked, onToggle: onBookmarkToggle }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-timestamp", children: ts })
+      ] }) })
+    ] }) });
+  }
+  function BookmarkBubble({
+    bookmark,
+    onRowClick,
+    onBookmarkToggle
+  }) {
+    const isUser = bookmark.messageRole === "user";
+    const ts = formatTimestamp(bookmark.timestamp);
+    const roleRowClass = isUser ? "mh-role-row mh-role-row-user" : "mh-role-row mh-role-row-assistant";
+    const rowClass = isUser ? "mh-bubble-row-user" : "mh-bubble-row-assistant";
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "mh-bookmark-item", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: rowClass, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-bubble-bookmark", onClick: onRowClick, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: roleRowClass, children: isUser ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-role-label mh-role-label-highlighted", children: "USER" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconPerson, { size: 12, className: "mh-role-icon-highlighted" })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconSmartToy, { size: 12, className: "mh-role-icon-highlighted" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-role-label mh-role-label-highlighted", children: "ASSISTANT" })
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: isUser ? "mh-body-user" : "mh-body-assistant", children: bookmark.messagePreview }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "mh-bubble-footer mh-bubble-footer-highlighted", children: isUser ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "mh-timestamp", children: [
+          ts,
+          bookmark.edited ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-edited-badge", children: "edited" }) : null
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(BookmarkButton, { bookmarked: true, onToggle: onBookmarkToggle })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(BookmarkButton, { bookmarked: true, onToggle: onBookmarkToggle }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "mh-timestamp", children: [
+          ts,
+          bookmark.edited ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-edited-badge", children: "edited" }) : null
+        ] })
+      ] }) })
+    ] }) }) });
+  }
   function SidebarApp({
     viewModel,
     onRequestClose
   }) {
     const state = useSidebarState(viewModel);
+    const scrollRef = (0, import_react.useRef)(null);
     const isBaseTab = state.activeTab === "base";
     const hasConversation = typeof state.base.conversationId === "string";
     const onClickBaseTab = (0, import_react.useCallback)(() => {
@@ -23311,137 +23485,116 @@
     const onClickBookmarksTab = (0, import_react.useCallback)(() => {
       viewModel.setActiveTab("bookmarks");
     }, [viewModel]);
-    const footerStatus = isBaseTab ? !hasConversation ? "WAITING FOR CONVERSATION" : state.base.loading ? "SYNCING MESSAGES" : state.base.error !== null ? "FAILED TO SYNC MESSAGES" : `${state.base.messages.length} MESSAGES SYNCED` : state.bookmarks.loading ? "SYNCING BOOKMARKS" : state.bookmarks.error !== null ? "FAILED TO SYNC BOOKMARKS" : `${state.bookmarks.items.length} BOOKMARKS`;
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-      "div",
-      {
-        style: {
-          height: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden"
-        },
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-            "div",
-            {
-              style: {
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "8px"
-              },
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { style: { margin: 0 }, children: "MapHack Sidebar" }),
-                onRequestClose ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: onRequestClose,
-                    "aria-label": "Close MapHack",
-                    title: "Close MapHack",
-                    children: "\uB2EB\uAE30"
-                  }
-                ) : null
-              ]
+    const onScrollTop = (0, import_react.useCallback)(() => {
+      scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    }, []);
+    const syncStatus = isBaseTab ? !hasConversation ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "WAITING" } : state.base.loading ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" } : state.base.error !== null ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" } : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" } : state.bookmarks.loading ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" } : state.bookmarks.error !== null ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" } : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" };
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-root", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "mh-header-logo-area", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-ascii-logo", children: ASCII_LOGO }) }),
+        onRequestClose ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "mh-close-btn",
+            onClick: onRequestClose,
+            "aria-label": "Close MapHack",
+            title: "Close MapHack",
+            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconClose, { size: 20 })
+          }
+        ) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("nav", { className: "mh-nav", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "button",
+          {
+            type: "button",
+            className: `mh-tab ${isBaseTab ? "mh-tab-active" : "mh-tab-inactive"}`,
+            onClick: onClickBaseTab,
+            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "mh-tab-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconChatBubble, { size: 14, filled: isBaseTab }),
+              "CHAT"
+            ] })
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "button",
+          {
+            type: "button",
+            className: `mh-tab ${isBaseTab ? "mh-tab-inactive" : "mh-tab-active"}`,
+            onClick: onClickBookmarksTab,
+            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "mh-tab-label", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconBookmark, { size: 14, filled: !isBaseTab }),
+              "BOOKMARK"
+            ] })
+          }
+        )
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-scroll", ref: scrollRef, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: isBaseTab ? "mh-content-chat" : "mh-content-chat mh-hidden", children: hasConversation && !state.base.loading && state.base.error === null && state.base.messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "mh-empty-message", children: "No messages" }) : state.base.messages.map((messageRef) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          ChatBubble,
+          {
+            messageRef,
+            bookmarked: viewModel.isBaseMessageBookmarked(messageRef),
+            onRowClick: () => {
+              viewModel.onBaseRowClick(messageRef);
+            },
+            onBookmarkToggle: () => {
+              void viewModel.onBaseBookmarkToggle(messageRef);
             }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", disabled: isBaseTab, onClick: onClickBaseTab, children: "\uAE30\uBCF8" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", disabled: !isBaseTab, onClick: onClickBookmarksTab, children: "\uBD81\uB9C8\uD06C" })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { flex: 1, minHeight: 0, overflowY: "auto" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { style: { display: isBaseTab ? "block" : "none" }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", { children: hasConversation && !state.base.loading && state.base.error === null && state.base.messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: "NO MESSAGES" }) : state.base.messages.map((messageRef) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-              "li",
-              {
-                style: { display: "flex", alignItems: "flex-start", gap: "8px" },
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                    "button",
-                    {
-                      type: "button",
-                      style: { flex: 1, textAlign: "left" },
-                      onClick: () => {
-                        viewModel.onBaseRowClick(messageRef);
-                      },
-                      children: `[${messageRef.role}] ${messageRef.preview} (${toTimestampLabel(messageRef.timestamp)})`
-                    }
-                  ),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                    "button",
-                    {
-                      type: "button",
-                      "aria-pressed": viewModel.isBaseMessageBookmarked(messageRef),
-                      title: viewModel.isBaseMessageBookmarked(messageRef) ? "Remove bookmark" : "Add bookmark",
-                      style: {
-                        color: viewModel.isBaseMessageBookmarked(messageRef) ? "#b42318" : "#667085"
-                      },
-                      onClick: () => {
-                        void viewModel.onBaseBookmarkToggle(messageRef);
-                      },
-                      children: viewModel.isBaseMessageBookmarked(messageRef) ? "\u2605" : "\u2606"
-                    }
-                  )
-                ]
-              },
-              messageRef.id
-            )) }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { style: { display: isBaseTab ? "none" : "block" }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", { children: !state.bookmarks.loading && state.bookmarks.error === null && state.bookmarks.items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: "NO BOOKMARKS" }) : state.bookmarks.items.map((bookmark) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-              "li",
-              {
-                style: { display: "flex", alignItems: "flex-start", gap: "8px" },
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-                    "button",
-                    {
-                      type: "button",
-                      style: { flex: 1, textAlign: "left" },
-                      onClick: () => {
-                        viewModel.onBookmarkRowClick(bookmark);
-                      },
-                      children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: `${bookmark.messagePreview} (${toTimestampLabel(bookmark.timestamp)})` }),
-                        bookmark.edited ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { style: { marginLeft: "8px" }, children: "EDITED" }) : null
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                    "button",
-                    {
-                      type: "button",
-                      "aria-pressed": true,
-                      title: "Remove bookmark",
-                      style: { color: "#b42318" },
-                      onClick: () => {
-                        void viewModel.onBookmarkToggle(bookmark);
-                      },
-                      children: "\u2605"
-                    }
-                  )
-                ]
-              },
-              bookmark.id
-            )) }) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-            "footer",
-            {
-              style: {
-                flexShrink: 0,
-                borderTop: "1px solid #d0d5dd",
-                padding: "8px 12px"
-              },
-              children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: { margin: 0 }, children: footerStatus })
+          },
+          messageRef.id
+        )) }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: isBaseTab ? "mh-content-bookmark mh-hidden" : "mh-content-bookmark", children: !state.bookmarks.loading && state.bookmarks.error === null && state.bookmarks.items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "mh-empty-message", children: "No bookmarks" }) : state.bookmarks.items.map((bookmark) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          BookmarkBubble,
+          {
+            bookmark,
+            onRowClick: () => {
+              viewModel.onBookmarkRowClick(bookmark);
+            },
+            onBookmarkToggle: () => {
+              void viewModel.onBookmarkToggle(bookmark);
             }
-          )
-        ]
-      }
-    );
+          },
+          bookmark.id
+        )) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-status-bar", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-status-left", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-count-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-count-item", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconChatBubble, { size: 12 }),
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-count-number", children: state.base.messages.length })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-count-divider", children: "|" }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-count-item", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconBookmark, { size: 12 }),
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-count-number", children: state.bookmarks.items.length })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "mh-sync-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: syncStatus.dot }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "mh-sync-text", children: syncStatus.text })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "mh-scroll-top-btn",
+            onClick: onScrollTop,
+            "aria-label": "Scroll to top",
+            title: "Scroll to top",
+            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(IconScrollTop, { size: 16 })
+          }
+        )
+      ] })
+    ] });
   }
   async function bootstrapSidebarApp(rootElement, viewModel, options = {}) {
     const root = (0, import_client.createRoot)(rootElement);
     root.render(
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
         SidebarApp,
         {
           viewModel,
@@ -23474,11 +23627,12 @@
   ]);
   var STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS = [300, 500, 800, 1200, 2e3, 3e3];
   var SOURCE_UPDATE_RETRY_DELAY_MS = 500;
-  var CHATGPT_CONVERSATION_PATH_PATTERN = /\/c\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/;
   var SidebarViewModel = class {
-    constructor(runtimeGateway, turnNavigator) {
-      this.runtimeGateway = runtimeGateway;
+    constructor(gateway, turnNavigator, readActiveConversationId, subscribeActiveConversationContextInvalidation2) {
+      this.gateway = gateway;
       this.turnNavigator = turnNavigator;
+      this.readActiveConversationId = readActiveConversationId;
+      this.subscribeActiveConversationContextInvalidation = subscribeActiveConversationContextInvalidation2;
       this.state = {
         activeTab: "base",
         base: {
@@ -23498,7 +23652,7 @@
       this.pendingSeqByConversationId = /* @__PURE__ */ new Map();
       this.activeSourceUpdateSessionId = null;
       this.unsubscribeSourceUpdated = null;
-      this.unsubscribeLocationChanges = null;
+      this.unsubscribeActiveConversationContextInvalidation = null;
       this.reloadBaseInFlight = null;
       this.reloadBaseConversationIdInFlight = null;
       this.reloadBookmarksInFlight = null;
@@ -23541,17 +23695,24 @@
         return;
       }
       if (this.unsubscribeSourceUpdated === null) {
-        this.unsubscribeSourceUpdated = this.runtimeGateway.subscribeSourceUpdated(
+        this.unsubscribeSourceUpdated = this.gateway.subscribeSourceUpdated(
           (signal) => {
             this.onSourceUpdated(signal);
           }
         );
       }
-      if (this.unsubscribeLocationChanges === null) {
-        this.unsubscribeLocationChanges = this.observeLocationChanges();
+      if (this.unsubscribeActiveConversationContextInvalidation === null) {
+        this.unsubscribeActiveConversationContextInvalidation = this.subscribeActiveConversationContextInvalidation(() => {
+          if (this.disposed) {
+            return;
+          }
+          void this.reconcileActiveConversation().catch((error) => {
+            console.error("active-conversation-reconcile-failed", error);
+          });
+        });
       }
       await this.reloadBookmarks();
-      await this.reconcileActiveConversationFromLocation();
+      await this.reconcileActiveConversation();
     }
     setActiveTab(tab) {
       if (this.disposed || this.state.activeTab === tab) {
@@ -23567,8 +23728,8 @@
       this.clearScheduledSourceUpdateDrain();
       this.unsubscribeSourceUpdated?.();
       this.unsubscribeSourceUpdated = null;
-      this.unsubscribeLocationChanges?.();
-      this.unsubscribeLocationChanges = null;
+      this.unsubscribeActiveConversationContextInvalidation?.();
+      this.unsubscribeActiveConversationContextInvalidation = null;
       this.listeners.clear();
     }
     async reloadBaseMessages(conversationId = this.state.base.conversationId) {
@@ -23582,7 +23743,7 @@
         return false;
       }
       this.patchBookmarkState({ loading: true, error: null });
-      const result = await this.runtimeGateway.addBookmark(messageRef);
+      const result = await this.gateway.addBookmark(messageRef);
       if (!result.ok) {
         this.patchBookmarkState({ loading: false, error: result.error });
         return false;
@@ -23596,7 +23757,7 @@
         return false;
       }
       this.patchBookmarkState({ loading: true, error: null });
-      const result = await this.runtimeGateway.removeBookmark(bookmarkId);
+      const result = await this.gateway.removeBookmark(bookmarkId);
       if (!result.ok) {
         this.patchBookmarkState({ loading: false, error: result.error });
         return false;
@@ -23609,7 +23770,7 @@
       return this.findExactBookmarkForMessage(messageRef) !== null;
     }
     onBaseRowClick(messageRef) {
-      const activeConversationId = this.resolveActiveConversationIdFromLocation();
+      const activeConversationId = this.readActiveConversationId();
       if (activeConversationId !== messageRef.conversationId) {
         return;
       }
@@ -23632,7 +23793,7 @@
         bookmark.messageId,
         bookmark.turnIndex
       );
-      const activeConversationId = this.resolveActiveConversationIdFromLocation();
+      const activeConversationId = this.readActiveConversationId();
       if (activeConversationId === bookmark.conversationId) {
         this.runTurnNavigation(
           this.turnNavigator.navigateWithinConversation(target),
@@ -23701,18 +23862,11 @@
         setTimeout(resolve, delayMs);
       });
     }
-    resolveActiveConversationIdFromLocation() {
-      if (typeof window === "undefined") {
-        return null;
+    async reconcileActiveConversation() {
+      if (this.disposed) {
+        return;
       }
-      const match = window.location.pathname.match(CHATGPT_CONVERSATION_PATH_PATTERN);
-      if (!match) {
-        return null;
-      }
-      return `mh-conv-${match[1].toLowerCase()}`;
-    }
-    async reconcileActiveConversationFromLocation() {
-      const activeConversationId = this.resolveActiveConversationIdFromLocation();
+      const activeConversationId = this.readActiveConversationId();
       if (this.state.base.conversationId === activeConversationId) {
         return;
       }
@@ -23722,63 +23876,6 @@
       }
       await this.loadBaseMessages(activeConversationId);
       void this.recoverInitialBaseIfEmpty(activeConversationId);
-    }
-    observeLocationChanges() {
-      if (typeof window === "undefined" || typeof window.addEventListener !== "function" || typeof document === "undefined") {
-        return () => {
-        };
-      }
-      let lastPathname = window.location.pathname;
-      let reconcileQueued = false;
-      const requestReconcile = () => {
-        if (reconcileQueued || this.disposed) {
-          return;
-        }
-        reconcileQueued = true;
-        setTimeout(() => {
-          reconcileQueued = false;
-          if (this.disposed) {
-            return;
-          }
-          const nextPathname = window.location.pathname;
-          if (nextPathname === lastPathname) {
-            return;
-          }
-          lastPathname = nextPathname;
-          void this.reconcileActiveConversationFromLocation().catch((error) => {
-            console.error("location-reconcile-failed", error);
-          });
-        }, 0);
-      };
-      const observeTarget = document.body ?? document.documentElement;
-      const observer = typeof MutationObserver === "function" && observeTarget ? new MutationObserver(() => {
-        requestReconcile();
-      }) : null;
-      observer?.observe(observeTarget, {
-        subtree: true,
-        childList: true,
-        characterData: true
-      });
-      const onFocus = () => {
-        requestReconcile();
-      };
-      const onPopState = () => {
-        requestReconcile();
-      };
-      const onVisibilityChange = () => {
-        if (document.visibilityState === "visible") {
-          requestReconcile();
-        }
-      };
-      window.addEventListener("focus", onFocus);
-      window.addEventListener("popstate", onPopState);
-      document.addEventListener("visibilitychange", onVisibilityChange);
-      return () => {
-        observer?.disconnect();
-        window.removeEventListener("focus", onFocus);
-        window.removeEventListener("popstate", onPopState);
-        document.removeEventListener("visibilitychange", onVisibilityChange);
-      };
     }
     syncBaseStateToActiveConversation(activeConversationId) {
       if (this.state.base.conversationId === activeConversationId) {
@@ -23888,14 +23985,14 @@
       if (pendingUpdates.size === 0 || this.disposed) {
         return;
       }
-      const startedActiveConversationId = this.resolveActiveConversationIdFromLocation();
+      const startedActiveConversationId = this.readActiveConversationId();
       this.syncBaseStateToActiveConversation(startedActiveConversationId);
       let baseReloadOutcome = "skipped_due_to_navigation";
       if (startedActiveConversationId !== null && pendingUpdates.has(startedActiveConversationId)) {
         baseReloadOutcome = await this.loadBaseMessages(startedActiveConversationId);
       }
       const bookmarkListOutcome = await this.loadBookmarks();
-      const finalActiveConversationId = this.resolveActiveConversationIdFromLocation();
+      const finalActiveConversationId = this.readActiveConversationId();
       this.syncBaseStateToActiveConversation(finalActiveConversationId);
       if (bookmarkListOutcome === "failed") {
         this.requeueSourceUpdates(pendingUpdates);
@@ -23917,14 +24014,14 @@
     }
     async recoverInitialBaseIfEmpty(conversationId) {
       for (const delayMs of STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS) {
-        if (this.disposed || this.resolveActiveConversationIdFromLocation() !== conversationId) {
+        if (this.disposed || this.readActiveConversationId() !== conversationId) {
           return;
         }
         if (this.state.base.messages.length > 0 || this.state.base.error !== null) {
           return;
         }
         await this.wait(delayMs);
-        if (this.disposed || this.resolveActiveConversationIdFromLocation() !== conversationId) {
+        if (this.disposed || this.readActiveConversationId() !== conversationId) {
           return;
         }
         const outcome = await this.loadBaseMessages(conversationId);
@@ -23934,7 +24031,7 @@
       }
     }
     canApplyBaseReloadResult(conversationId) {
-      return !this.disposed && this.state.base.conversationId === conversationId && this.resolveActiveConversationIdFromLocation() === conversationId;
+      return !this.disposed && this.state.base.conversationId === conversationId && this.readActiveConversationId() === conversationId;
     }
     async reloadBaseMessagesInternal(conversationId) {
       if (!conversationId) {
@@ -23964,9 +24061,9 @@
         if (this.disposed) {
           return "skipped_due_to_navigation";
         }
-        const result = await this.runtimeGateway.listBaseMessages(conversationId);
+        const result = await this.gateway.listBaseMessages(conversationId);
         if (!this.canApplyBaseReloadResult(conversationId)) {
-          this.syncBaseStateToActiveConversation(this.resolveActiveConversationIdFromLocation());
+          this.syncBaseStateToActiveConversation(this.readActiveConversationId());
           return "skipped_due_to_navigation";
         }
         if (result.ok) {
@@ -23996,7 +24093,7 @@
     async reloadBookmarksInternal() {
       const mutationRevisionAtRequestStart = this.bookmarkMutationRevision;
       this.patchBookmarkState({ loading: true, error: null });
-      const result = await this.runtimeGateway.listBookmarks();
+      const result = await this.gateway.listBookmarks();
       if (mutationRevisionAtRequestStart !== this.bookmarkMutationRevision) {
         this.patchBookmarkState({ loading: false, error: null });
         return "applied";
@@ -24111,8 +24208,8 @@
     state.target.style.maxWidth = state.previousMaxWidth;
     state.target.style.transition = state.previousTransition;
   }
-  function resolveMainUsableRightBoundary(documentRef, viewportRightTolerancePx) {
-    const viewportWidth = window.innerWidth;
+  function resolveMainUsableRightBoundary(documentRef, windowRef, viewportRightTolerancePx) {
+    const viewportWidth = windowRef.innerWidth;
     const panel = documentRef.querySelector(PERSISTENT_RIGHT_PANEL_SELECTOR);
     if (panel instanceof HTMLElement) {
       const rect = panel.getBoundingClientRect();
@@ -24132,9 +24229,10 @@
     const composerShell = textbox.closest("div.shadow-short-composer");
     return composerShell instanceof HTMLElement ? composerShell.getBoundingClientRect() : null;
   }
-  function resolveClosedOpenButtonPlacement(documentRef, options) {
+  function resolveClosedOpenButtonPlacement(documentRef, windowRef, options) {
     const mainUsableRightBoundary = resolveMainUsableRightBoundary(
       documentRef,
+      windowRef,
       options.viewportRightTolerancePx
     );
     const composerShellRect = resolveComposerShellRect(documentRef);
@@ -24148,7 +24246,7 @@
     const fallbackBottomGapPx = 24;
     return {
       centerXPx: mainUsableRightBoundary - fallbackRightGapPx - options.openButtonSizePx / 2,
-      centerYPx: window.innerHeight - fallbackBottomGapPx - options.openButtonSizePx / 2
+      centerYPx: windowRef.innerHeight - fallbackBottomGapPx - options.openButtonSizePx / 2
     };
   }
   function resolveTriggerBarRoot(documentRef) {
@@ -24181,15 +24279,14 @@
   function placementsEqual(left, right) {
     return left.centerXPx === right.centerXPx && left.centerYPx === right.centerYPx;
   }
-  function createChatgptSidebarLayout(documentRef, options) {
+  function createChatgptSidebarLayout(documentRef, windowRef, options) {
     if (!documentRef.body) {
       return null;
     }
-    const windowRef = documentRef.defaultView ?? window;
     let appliedState = null;
     let hiddenTriggerBar = null;
     let shellOpen = false;
-    let lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+    let lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
     let closedPlacementSubscriber = null;
     let pendingFrameId = null;
     const syncOpenLayoutTarget = () => {
@@ -24226,7 +24323,7 @@
       }
     };
     const syncClosedPlacement = () => {
-      const nextPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+      const nextPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
       if (placementsEqual(lastClosedPlacement, nextPlacement)) {
         return;
       }
@@ -24276,7 +24373,7 @@
           shellOpen = false;
           restoreHiddenElement(hiddenTriggerBar);
           hiddenTriggerBar = null;
-          lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+          lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
           return false;
         }
         syncTriggerBarVisibility();
@@ -24288,7 +24385,7 @@
         shellOpen = false;
         restoreHiddenElement(hiddenTriggerBar);
         hiddenTriggerBar = null;
-        lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, options);
+        lastClosedPlacement = resolveClosedOpenButtonPlacement(documentRef, windowRef, options);
       },
       dispose() {
         shellOpen = false;
@@ -24335,8 +24432,8 @@
     host.style.width = `${sidebarWidthPx}px`;
     host.style.height = "100vh";
     host.style.zIndex = "2147483647";
-    host.style.background = "#ffffff";
-    host.style.borderLeft = "1px solid #d0d5dd";
+    host.style.background = "#0d1117";
+    host.style.borderLeft = "1px solid #30363d";
     host.style.overflow = "hidden";
     host.style.transition = "transform 160ms ease";
     documentRef.body.appendChild(host);
@@ -24346,6 +24443,10 @@
     const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: "open" });
     let root = shadowRoot.getElementById(SIDEBAR_ROOT_ID);
     if (!root) {
+      const link = documentRef.createElement("link");
+      link.rel = "stylesheet";
+      link.href = chrome.runtime.getURL("public/sidebar.css");
+      shadowRoot.appendChild(link);
       root = documentRef.createElement("div");
       root.id = SIDEBAR_ROOT_ID;
       root.style.width = `${sidebarWidthPx}px`;
@@ -24479,6 +24580,53 @@
   var mountedHandle = null;
   var mountedShell = null;
   var mountPromise = null;
+  function subscribeActiveConversationContextInvalidation(documentRef, windowRef, onInvalidate) {
+    let active = true;
+    let queued = false;
+    const requestInvalidate = () => {
+      if (!active || queued) {
+        return;
+      }
+      queued = true;
+      windowRef.setTimeout(() => {
+        queued = false;
+        if (!active) {
+          return;
+        }
+        onInvalidate();
+      }, 0);
+    };
+    const observerTarget = documentRef.body ?? documentRef.documentElement;
+    const observer = observerTarget ? new MutationObserver(() => {
+      requestInvalidate();
+    }) : null;
+    observer?.observe(observerTarget, {
+      subtree: true,
+      childList: true,
+      characterData: true
+    });
+    const onFocus = () => {
+      requestInvalidate();
+    };
+    const onPopState = () => {
+      requestInvalidate();
+    };
+    const onVisibilityChange = () => {
+      if (documentRef.visibilityState === "visible") {
+        requestInvalidate();
+      }
+    };
+    windowRef.addEventListener("focus", onFocus);
+    windowRef.addEventListener("popstate", onPopState);
+    documentRef.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      observer?.disconnect();
+      windowRef.removeEventListener("focus", onFocus);
+      windowRef.removeEventListener("popstate", onPopState);
+      documentRef.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }
   async function mountSidebarInIsolated(documentRef) {
     if (mountedHandle && mountedShell) {
       if (!mountedShell.open()) {
@@ -24490,7 +24638,8 @@
       return mountPromise;
     }
     mountPromise = (async () => {
-      const layoutController = createChatgptSidebarLayout(documentRef, {
+      const windowRef = documentRef.defaultView;
+      const layoutController = createChatgptSidebarLayout(documentRef, windowRef, {
         sidebarWidthPx: SIDEBAR_WIDTH_PX,
         openButtonSizePx: SIDEBAR_OPEN_BUTTON_SIZE_PX,
         viewportRightTolerancePx: VIEWPORT_RIGHT_TOLERANCE_PX
@@ -24511,9 +24660,15 @@
         const runtimeGateway = createSidebarRuntimeGateway();
         const turnNavigator = createChatgptTurnNavigator({
           documentRef,
-          windowRef: documentRef.defaultView ?? window
+          windowRef
         });
-        const viewModel = new SidebarViewModel(runtimeGateway, turnNavigator);
+        const readActiveConversationId = () => readCurrentChatgptConversation()?.id ?? null;
+        const viewModel = new SidebarViewModel(
+          runtimeGateway,
+          turnNavigator,
+          readActiveConversationId,
+          (onInvalidate) => subscribeActiveConversationContextInvalidation(documentRef, windowRef, onInvalidate)
+        );
         const appHandle = await bootstrapSidebarApp(shell.rootElement, viewModel, {
           onRequestClose: () => {
             shell.close();
@@ -24614,7 +24769,6 @@
       try {
         const result = await syncResolvedConversationSource({
           hostname: window.location.hostname,
-          conversationUrl: window.location.href,
           root: document,
           sendRuntimeMessage,
           postMainMessage,

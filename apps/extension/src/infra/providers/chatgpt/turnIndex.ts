@@ -1,40 +1,46 @@
 import {
+  isMapHackMessageId,
+  toOriginalMessageId
+} from "../../../../../../packages/core/src/domain/value/MapHackMessageId";
+import {
   CHATGPT_MESSAGE_CONTAINER_FALLBACKS,
   CHATGPT_MESSAGE_CONTAINER_PRIMARY
 } from "./selectors";
 
-export const CHATGPT_TURN_INDEX_ARTICLE_SELECTOR = "article";
-export const CHATGPT_TURN_INDEX_ARTICLE_TEST_ID_ATTRIBUTE = "data-testid";
+export const CHATGPT_TURN_CONTAINER_SELECTOR = '[data-testid^="conversation-turn-"]';
+export const CHATGPT_TURN_CONTAINER_TEST_ID_ATTRIBUTE = "data-testid";
 export const CHATGPT_TURN_INDEX_DESCENDANT_SELECTOR = '[data-testid^="conversation-turn-"]';
 export const CHATGPT_TURN_INDEX_DESCENDANT_TEST_ID_ATTRIBUTE = "data-testid";
 export const CHATGPT_TURN_INDEX_TEST_ID_PATTERN = /conversation-turn-(\d+)/;
-const MAPHACK_MESSAGE_ID_PREFIX = "mh-msg-";
 
 function normalizeAttribute(value: string | null | undefined): string {
   return value?.trim() ?? "";
 }
 
-function toOriginalMessageId(messageId: string): string | null {
-  if (!messageId.startsWith(MAPHACK_MESSAGE_ID_PREFIX)) {
+function toOriginalId(messageId: string): string | null {
+  if (!isMapHackMessageId(messageId)) {
     return messageId.length > 0 ? messageId : null;
   }
 
-  const originalId = messageId.slice(MAPHACK_MESSAGE_ID_PREFIX.length);
+  const originalId = toOriginalMessageId(messageId);
   return originalId.length > 0 ? originalId : null;
 }
 
-export function parseChatgptTurnIndexFromElement(
-  element: Element,
-  fallbackIndex: number
-): number {
-  const fromArticle = normalizeAttribute(
-    element.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR)?.getAttribute(
-      CHATGPT_TURN_INDEX_ARTICLE_TEST_ID_ATTRIBUTE
+export type ParsedTurnIndex =
+  | { value: number; source: "primary" }
+  | { value: number; source: "fallback" };
+
+const RADIX_DECIMAL = 10;
+
+function parsePrimaryTurnIndex(element: Element): number | null {
+  const fromContainer = normalizeAttribute(
+    element.closest(CHATGPT_TURN_CONTAINER_SELECTOR)?.getAttribute(
+      CHATGPT_TURN_CONTAINER_TEST_ID_ATTRIBUTE
     )
   );
-  const articleMatch = fromArticle.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
-  if (articleMatch) {
-    return Number.parseInt(articleMatch[1], 10);
+  const containerMatch = fromContainer.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
+  if (containerMatch) {
+    return Number.parseInt(containerMatch[1], RADIX_DECIMAL);
   }
 
   const descendant = element.querySelector(CHATGPT_TURN_INDEX_DESCENDANT_SELECTOR);
@@ -43,10 +49,22 @@ export function parseChatgptTurnIndexFromElement(
   );
   const descendantMatch = fromDescendant.match(CHATGPT_TURN_INDEX_TEST_ID_PATTERN);
   if (descendantMatch) {
-    return Number.parseInt(descendantMatch[1], 10);
+    return Number.parseInt(descendantMatch[1], RADIX_DECIMAL);
   }
 
-  return fallbackIndex;
+  return null;
+}
+
+export function parseChatgptTurnIndexFromElement(
+  element: Element,
+  fallbackIndex: number
+): ParsedTurnIndex {
+  const primary = parsePrimaryTurnIndex(element);
+  if (primary !== null) {
+    return { value: primary, source: "primary" };
+  }
+
+  return { value: fallbackIndex, source: "fallback" };
 }
 
 export function findChatgptTurnElementByTurnIndex(
@@ -67,11 +85,11 @@ export function findChatgptTurnElementByTurnIndex(
       }
 
       seen.add(candidate);
-      if (parseChatgptTurnIndexFromElement(candidate, -1) !== turnIndex) {
+      if (parsePrimaryTurnIndex(candidate) !== turnIndex) {
         continue;
       }
 
-      return candidate.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR) ?? candidate;
+      return candidate.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? candidate;
     }
   }
 
@@ -82,18 +100,17 @@ export function findChatgptTurnElementByMessageId(
   root: ParentNode,
   messageId: string
 ): Element | null {
-  const originalMessageId = toOriginalMessageId(messageId);
+  const originalMessageId = toOriginalId(messageId);
   if (!originalMessageId) {
     return null;
   }
 
   const exactMessageElement =
-    root.querySelector(`[data-message-id="${originalMessageId}"]`) ??
-    root.querySelector(`[data-turn-id="${originalMessageId}"]`);
+    root.querySelector(`[data-message-id="${originalMessageId}"]`);
 
   if (!exactMessageElement) {
     return null;
   }
 
-  return exactMessageElement.closest(CHATGPT_TURN_INDEX_ARTICLE_SELECTOR) ?? exactMessageElement;
+  return exactMessageElement.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? exactMessageElement;
 }

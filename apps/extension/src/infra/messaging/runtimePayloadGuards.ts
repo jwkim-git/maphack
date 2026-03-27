@@ -33,7 +33,8 @@ export function isRuntimeMessageRef(value: unknown): value is RuntimeMessageRef 
 
   return (
     typeof value.metadata.originalId === "string" &&
-    typeof value.metadata.turnIndex === "number"
+    typeof value.metadata.turnIndex === "number" &&
+    (value.metadata.turnIndexSource === "primary" || value.metadata.turnIndexSource === "fallback")
   );
 }
 

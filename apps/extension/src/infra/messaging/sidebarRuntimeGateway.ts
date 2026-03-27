@@ -1,3 +1,10 @@
+import type { Bookmark } from "../../../../../packages/core/src/domain/entities/Bookmark";
+import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
+import type {
+  SidebarGateway,
+  GatewayResult,
+  SourceUpdatedSignal
+} from "../../application/ports/SidebarGateway";
 import {
   createAddBookmarkRequest,
   createListBaseMessagesRequest,
@@ -15,13 +22,11 @@ import {
   type RuntimeBookmark,
   type RuntimeMessageRef
 } from "./runtimeBridge";
-
-export type RuntimeGatewayResult<T> = { ok: true; value: T } | { ok: false; error: string };
-export interface SourceUpdatedSignal {
-  conversationId: string;
-  seq: number;
-  sessionId: string;
-}
+import {
+  toDomainBookmark,
+  toDomainMessageRef,
+  toRuntimeMessageRef
+} from "./runtimeMapper";
 
 type RequestScope = "list-base" | "list-bookmarks" | "add-bookmark" | "remove-bookmark";
 type RuntimeResponseWithRequestId = { requestId: string };
@@ -48,14 +53,6 @@ const LIST_BASE_TIMEOUT = Symbol("list-base-timeout");
 export interface RuntimeApi {
   sendMessage(message: unknown): Promise<unknown>;
   addMessageListener(listener: RuntimeMessageListener): () => void;
-}
-
-export interface SidebarRuntimeGateway {
-  subscribeSourceUpdated(listener: (signal: SourceUpdatedSignal) => void): () => void;
-  listBaseMessages(conversationId: string): Promise<RuntimeGatewayResult<RuntimeMessageRef[]>>;
-  listBookmarks(): Promise<RuntimeGatewayResult<RuntimeBookmark[]>>;
-  addBookmark(messageRef: RuntimeMessageRef): Promise<RuntimeGatewayResult<RuntimeBookmark>>;
-  removeBookmark(bookmarkId: string): Promise<RuntimeGatewayResult<string>>;
 }
 
 function createRuntimeRequestId(scope: RequestScope): string {
@@ -130,7 +127,7 @@ async function request<
   isSuccess: (value: unknown) => value is TSuccess,
   isFailure: (value: unknown) => value is TFailure,
   invalidError: string
-): Promise<RuntimeGatewayResult<TSuccess>> {
+): Promise<GatewayResult<TSuccess>> {
   const requestPayload = createRequest(createRuntimeRequestId(scope));
   const response = await runtimeApi.sendMessage(requestPayload);
 
@@ -147,7 +144,7 @@ async function request<
 
 export function createSidebarRuntimeGateway(
   runtimeApi: RuntimeApi = createChromeRuntimeApi()
-): SidebarRuntimeGateway {
+): SidebarGateway {
   return {
     subscribeSourceUpdated(listener: (signal: SourceUpdatedSignal) => void): () => void {
       return runtimeApi.addMessageListener((message) => {
@@ -161,7 +158,7 @@ export function createSidebarRuntimeGateway(
       });
     },
 
-    async listBaseMessages(conversationId: string): Promise<RuntimeGatewayResult<RuntimeMessageRef[]>> {
+    async listBaseMessages(conversationId: string): Promise<GatewayResult<MessageRef[]>> {
       const requestId = createRuntimeRequestId("list-base");
       const requestPayload = createListBaseMessagesRequest(requestId, conversationId);
 
@@ -183,10 +180,12 @@ export function createSidebarRuntimeGateway(
       if (isListBaseMessagesSuccess(response) && response.requestId === requestId) {
         return {
           ok: true,
-          value: response.messageRefs.map((message) => ({
-            ...message,
-            metadata: { ...message.metadata }
-          }))
+          value: response.messageRefs.map((message: RuntimeMessageRef) =>
+            toDomainMessageRef({
+              ...message,
+              metadata: { ...message.metadata }
+            })
+          )
         };
       }
 
@@ -197,7 +196,7 @@ export function createSidebarRuntimeGateway(
       return { ok: false, error: "list-base-messages-invalid-response" };
     },
 
-    async listBookmarks(): Promise<RuntimeGatewayResult<RuntimeBookmark[]>> {
+    async listBookmarks(): Promise<GatewayResult<Bookmark[]>> {
       const result = await request(
         runtimeApi,
         "list-bookmarks",
@@ -213,18 +212,21 @@ export function createSidebarRuntimeGateway(
 
       return {
         ok: true,
-        value: result.value.bookmarks.map((bookmark) => ({ ...bookmark }))
+        value: result.value.bookmarks.map((bookmark: RuntimeBookmark) =>
+          toDomainBookmark({ ...bookmark })
+        )
       };
     },
 
-    async addBookmark(messageRef: RuntimeMessageRef): Promise<RuntimeGatewayResult<RuntimeBookmark>> {
+    async addBookmark(messageRef: MessageRef): Promise<GatewayResult<Bookmark>> {
+      const runtimeRef = toRuntimeMessageRef(messageRef);
       const result = await request(
         runtimeApi,
         "add-bookmark",
         (requestId) =>
           createAddBookmarkRequest(requestId, {
-            ...messageRef,
-            metadata: { ...messageRef.metadata }
+            ...runtimeRef,
+            metadata: { ...runtimeRef.metadata }
           }),
         isAddBookmarkSuccess,
         isAddBookmarkFailure,
@@ -237,13 +239,11 @@ export function createSidebarRuntimeGateway(
 
       return {
         ok: true,
-        value: {
-          ...result.value.bookmark
-        }
+        value: toDomainBookmark({ ...result.value.bookmark })
       };
     },
 
-    async removeBookmark(bookmarkId: string): Promise<RuntimeGatewayResult<string>> {
+    async removeBookmark(bookmarkId: string): Promise<GatewayResult<string>> {
       const result = await request(
         runtimeApi,
         "remove-bookmark",

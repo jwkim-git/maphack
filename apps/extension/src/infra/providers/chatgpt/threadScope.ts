@@ -15,8 +15,13 @@ function resolveChatgptMessageContainers(root: ParentNode): Element[] {
     return fromPrimary;
   }
 
+  const hasCommittedMessageDescendant = (element: Element): boolean =>
+    element.querySelector(CHATGPT_MESSAGE_CONTAINER_PRIMARY) !== null;
+
   for (const selector of CHATGPT_MESSAGE_CONTAINER_FALLBACKS) {
-    const fromFallback = Array.from(root.querySelectorAll(selector));
+    const fromFallback = Array.from(root.querySelectorAll(selector)).filter(
+      hasCommittedMessageDescendant
+    );
     if (fromFallback.length > 0) {
       return fromFallback;
     }
@@ -25,7 +30,7 @@ function resolveChatgptMessageContainers(root: ParentNode): Element[] {
   return [];
 }
 
-function isRenderedElement(element: Element, root: Document): boolean {
+function isRenderedElement(element: Element, windowRef: Window): boolean {
   if (!element.isConnected) {
     return false;
   }
@@ -34,7 +39,7 @@ function isRenderedElement(element: Element, root: Document): boolean {
     return false;
   }
 
-  const style = root.defaultView?.getComputedStyle(element);
+  const style = windowRef.getComputedStyle(element);
   if (!style) {
     return true;
   }
@@ -42,10 +47,10 @@ function isRenderedElement(element: Element, root: Document): boolean {
   return style.display !== "none" && style.visibility !== "hidden";
 }
 
-function resolveClosestOverflowContainer(root: Document, element: Element): Element | null {
+function resolveClosestOverflowContainer(element: Element, windowRef: Window): Element | null {
   let current: Element | null = element.parentElement;
   while (current) {
-    const overflowY = root.defaultView?.getComputedStyle(current).overflowY ?? "";
+    const overflowY = windowRef.getComputedStyle(current).overflowY;
     if (overflowY === "auto" || overflowY === "scroll") {
       return current;
     }
@@ -55,13 +60,13 @@ function resolveClosestOverflowContainer(root: Document, element: Element): Elem
   return null;
 }
 
-export function resolveChatgptCaptureScope(root: Document): ChatgptCaptureScope | null {
+export function resolveChatgptCaptureScope(root: Document, windowRef: Window): ChatgptCaptureScope | null {
   const primaryContainers = Array.from(root.querySelectorAll(CHATGPT_SCROLL_CONTAINER_PRIMARY));
   const primaryScopes = primaryContainers
     .map((container) => ({
       container,
       messageContainers: resolveChatgptMessageContainers(container).filter((element) =>
-        isRenderedElement(element, root)
+        isRenderedElement(element, windowRef)
       )
     }))
     .filter((scope) => scope.messageContainers.length > 0);
@@ -75,7 +80,7 @@ export function resolveChatgptCaptureScope(root: Document): ChatgptCaptureScope 
   }
 
   const renderedRows = resolveChatgptMessageContainers(root).filter((element) =>
-    isRenderedElement(element, root)
+    isRenderedElement(element, windowRef)
   );
   if (renderedRows.length === 0) {
     return null;
@@ -83,7 +88,7 @@ export function resolveChatgptCaptureScope(root: Document): ChatgptCaptureScope 
 
   const distinctContainers = new Set<Element>();
   for (const row of renderedRows) {
-    const container = resolveClosestOverflowContainer(root, row);
+    const container = resolveClosestOverflowContainer(row, windowRef);
     if (!container) {
       return null;
     }
