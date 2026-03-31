@@ -258,14 +258,14 @@ export async function syncResolvedConversationSource(input: {
   const shouldCaptureSnapshot = !input.state.hasInitialSnapshotCaptured;
   const shouldCaptureDelta =
     input.state.hasInitialSnapshotCaptured && changedTurnIndexes.length > 0;
-  let priorityMessageIds: readonly TrackedMessageId[] = deltaMessageIds;
+  let captureResult: Awaited<ReturnType<typeof captureConversationSource>> | undefined;
 
   if (shouldCaptureSnapshot || shouldCaptureDelta) {
     const captureSource = shouldCaptureSnapshot
       ? sourceOrResult
       : selectSourceByMessageIds(sourceOrResult, new Set<TrackedMessageId>(deltaMessageIds));
     const captureMode = shouldCaptureSnapshot ? "snapshot" : "delta";
-    const captureResult = await captureConversationSource(
+    captureResult = await captureConversationSource(
       captureSource,
       captureMode,
       input.sendRuntimeMessage
@@ -285,8 +285,6 @@ export async function syncResolvedConversationSource(input: {
       if (replayResult !== "sent") {
         return replayResult;
       }
-
-      priorityMessageIds = sourceOrResult.messageRefs.map((messageRef) => messageRef.id);
     } else if (captureResult !== "sent") {
       return captureResult;
     }
@@ -296,13 +294,22 @@ export async function syncResolvedConversationSource(input: {
   input.state.lastCommittedConversationId = sourceOrResult.conversation.id;
   input.state.lastCommittedScopeIds = new Set(sourceOrResult.collectionMeta.scopeIds);
   replacePreviousMessageIdByTurnIndex(input.state, nextMessageIdByTurnIndex);
-  requestTimestampsFromMain(
-    sourceOrResult,
-    input.state,
-    input.postMainMessage,
-    input.targetOrigin,
-    priorityMessageIds
-  );
+  if (shouldCaptureSnapshot || captureResult === "snapshot-required") {
+    requestTimestampsFromMain(
+      sourceOrResult,
+      input.state,
+      input.postMainMessage,
+      input.targetOrigin
+    );
+  } else {
+    requestTimestampsFromMain(
+      sourceOrResult,
+      input.state,
+      input.postMainMessage,
+      input.targetOrigin,
+      deltaMessageIds
+    );
+  }
   return "sent";
 }
 

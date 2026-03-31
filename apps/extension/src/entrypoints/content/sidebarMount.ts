@@ -12,8 +12,8 @@ import {
   type SidebarShellHandle
 } from "./sidebarShell";
 
-const SIDEBAR_WIDTH_PX = 300;
-const SIDEBAR_OPEN_BUTTON_SIZE_PX = 56;
+const SIDEBAR_WIDTH_PX = 260;
+const SIDEBAR_OPEN_BUTTON_SIZE_PX = 48;
 const VIEWPORT_RIGHT_TOLERANCE_PX = 2;
 
 let mountedHandle: SidebarAppHandle | null = null;
@@ -84,9 +84,6 @@ function subscribeActiveConversationContextInvalidation(
 
 export async function mountSidebarInIsolated(documentRef: Document): Promise<void> {
   if (mountedHandle && mountedShell) {
-    if (!mountedShell.open()) {
-      console.error("sidebar-layout-target-unresolved");
-    }
     return;
   }
 
@@ -122,6 +119,10 @@ export async function mountSidebarInIsolated(documentRef: Document): Promise<voi
         windowRef
       });
       const readActiveConversationId = () => readCurrentChatgptConversation()?.id ?? null;
+
+      const isCrossConversation =
+        sessionStorage.getItem("maphack:selected-bookmark-id") !== null;
+
       const viewModel = new SidebarViewModel(
         runtimeGateway,
         turnNavigator,
@@ -135,12 +136,14 @@ export async function mountSidebarInIsolated(documentRef: Document): Promise<voi
         }
       });
 
-      const opened = shell.open();
-      if (!opened) {
-        appHandle.dispose();
-        shell.dispose();
-        console.error("sidebar-layout-target-unresolved");
-        return;
+      if (isCrossConversation) {
+        const opened = shell.open();
+        if (!opened) {
+          appHandle.dispose();
+          shell.dispose();
+          console.error("sidebar-layout-target-unresolved");
+          return;
+        }
       }
 
       mountedShell = shell;

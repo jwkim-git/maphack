@@ -155,13 +155,16 @@ function clearPendingTarget(storageRef: Storage | null): void {
   } catch {}
 }
 
+const SCROLL_NAVIGATION_PADDING = 16;
+
 function resolveScrollContainerVisibleStartOffset(
   scrollContainer: Element,
   windowRef: Window
 ): number {
   const rawValue = windowRef.getComputedStyle(scrollContainer).scrollPaddingTop;
   const parsedValue = Number.parseFloat(rawValue);
-  return Number.isFinite(parsedValue) ? parsedValue : 0;
+  const base = Number.isFinite(parsedValue) ? parsedValue : 0;
+  return base + SCROLL_NAVIGATION_PADDING;
 }
 
 function scrollTurnElementIntoView(
@@ -197,35 +200,24 @@ function findChatgptTurnElementByTarget(
   );
 }
 
-async function consumePendingTarget(
-  root: Document,
-  windowRef: Window,
-  storageRef: Storage | null,
-  readyConversationId: string
-): Promise<void> {
-  const pendingTarget = readPendingTarget(storageRef);
-  if (!pendingTarget) {
-    return;
-  }
-
-  if (pendingTarget.conversationId !== readyConversationId) {
-    return;
-  }
-
-  const turnElement = findChatgptTurnElementByTarget(root, pendingTarget);
-  if (!turnElement) {
-    return;
-  }
-
-  scrollTurnElementIntoView(root, turnElement, windowRef);
-  clearPendingTarget(storageRef);
-}
-
 export function createChatgptTurnNavigator(
   options: ChatgptTurnNavigatorOptions
 ): TurnNavigator {
   const { documentRef, windowRef } = options;
   const storageRef = resolveSessionStorage(windowRef, options.storageRef);
+  let pendingObserver: MutationObserver | null = null;
+  let pendingScrollCleanup: (() => void) | null = null;
+
+  function disposePending(): void {
+    if (pendingScrollCleanup) {
+      pendingScrollCleanup();
+      pendingScrollCleanup = null;
+    }
+    if (pendingObserver) {
+      pendingObserver.disconnect();
+      pendingObserver = null;
+    }
+  }
 
   return {
     async navigateWithinConversation(target: TurnNavigationTarget): Promise<void> {
@@ -238,12 +230,67 @@ export function createChatgptTurnNavigator(
     },
 
     async navigateAcrossConversations(target: TurnNavigationTarget): Promise<void> {
+      disposePending();
       writePendingTarget(storageRef, target);
       windowRef.location.assign(target.conversationUrl);
     },
 
     async consumePendingNavigation(readyConversationId: string): Promise<void> {
-      await consumePendingTarget(documentRef, windowRef, storageRef, readyConversationId);
+      disposePending();
+
+      const pendingTarget = readPendingTarget(storageRef);
+      if (!pendingTarget || pendingTarget.conversationId !== readyConversationId) {
+        return;
+      }
+
+      const observeTarget = documentRef.body ?? documentRef.documentElement;
+      if (!observeTarget) {
+        return;
+      }
+
+      pendingObserver = new MutationObserver(() => {
+        const turnElement = findChatgptTurnElementByTarget(documentRef, pendingTarget);
+        if (!turnElement) {
+          return;
+        }
+
+        if (pendingObserver) {
+          pendingObserver.disconnect();
+          pendingObserver = null;
+        }
+
+        const scrollContainer = resolveChatgptScrollContainer(documentRef, [turnElement], windowRef);
+        if (!scrollContainer) {
+          turnElement.scrollIntoView({ block: "start" });
+          clearPendingTarget(storageRef);
+          return;
+        }
+
+        if (scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
+          clearPendingTarget(storageRef);
+          return;
+        }
+
+        const onScroll = (): void => {
+          pendingScrollCleanup = null;
+          const visibleStartOffset = resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef);
+          scrollContainer.scrollTop =
+            scrollContainer.scrollTop +
+            (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) -
+            visibleStartOffset;
+          clearPendingTarget(storageRef);
+        };
+
+        scrollContainer.addEventListener("scroll", onScroll, { once: true });
+        pendingScrollCleanup = () => {
+          scrollContainer.removeEventListener("scroll", onScroll);
+        };
+      });
+
+      pendingObserver.observe(observeTarget, {
+        subtree: true,
+        childList: true
+      });
     }
   };
 }

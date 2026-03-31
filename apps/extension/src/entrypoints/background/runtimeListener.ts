@@ -172,6 +172,9 @@ export function createBackgroundRuntimeListener(
           if (isCaptureConversationSuccess(response)) {
             sendResponse(response);
           }
+          const conversationId = message.source.conversation.id;
+          const seq = resolveNextConversationSeq(conversationId);
+          emitSourceUpdatedEvent(conversationId, seq, senderTabId);
         })
         .catch((error: unknown) => {
           const response = createCaptureConversationFailure(

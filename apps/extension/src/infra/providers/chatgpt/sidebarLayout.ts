@@ -91,19 +91,6 @@ function resolveMainUsableRightBoundary(
   return viewportWidth;
 }
 
-function resolveComposerShellRect(documentRef: Document): DOMRect | null {
-  const textbox = documentRef.querySelector(
-    "#prompt-textarea.ProseMirror[role=\"textbox\"][contenteditable=\"true\"]"
-  );
-
-  if (!(textbox instanceof HTMLElement)) {
-    return null;
-  }
-
-  const composerShell = textbox.closest("div.shadow-short-composer");
-  return composerShell instanceof HTMLElement ? composerShell.getBoundingClientRect() : null;
-}
-
 function resolveClosedOpenButtonPlacement(
   documentRef: Document,
   windowRef: Window,
@@ -114,23 +101,15 @@ function resolveClosedOpenButtonPlacement(
     windowRef,
     options.viewportRightTolerancePx
   );
-  const composerShellRect = resolveComposerShellRect(documentRef);
 
-  if (composerShellRect) {
-    return {
-      centerXPx: (composerShellRect.right + mainUsableRightBoundary) / 2,
-      centerYPx: composerShellRect.top + composerShellRect.height / 2
-    };
-  }
-
-  const fallbackRightGapPx = 16;
-  const fallbackBottomGapPx = 24;
+  const rightGapPx = 16;
+  const bottomGapPx = 24;
 
   return {
     centerXPx:
-      mainUsableRightBoundary - fallbackRightGapPx - options.openButtonSizePx / 2,
+      mainUsableRightBoundary - rightGapPx - options.openButtonSizePx / 2,
     centerYPx:
-      windowRef.innerHeight - fallbackBottomGapPx - options.openButtonSizePx / 2
+      windowRef.innerHeight - bottomGapPx - options.openButtonSizePx / 2
   };
 }
 

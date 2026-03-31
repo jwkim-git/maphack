@@ -7,6 +7,7 @@ import {
   IconClose,
   IconChatBubble,
   IconBookmark,
+  IconLogo,
   IconPerson,
   IconSmartToy,
   IconScrollTop
@@ -21,15 +22,6 @@ export interface SidebarAppOptions {
   onRequestClose?: () => void;
 }
 
-const ASCII_LOGO = [
-  " _____ ______   ________  ________  ___  ___  ________  ________  ___  __       ",
-  "|\\   _ \\  _   \\|\\   __  \\|\\   __  \\|\\  \\|\\  \\|\\   __  \\|\\   ____\\|\\  \\|\\  \\     ",
-  "\\ \\  \\\\\\__\\ \\  \\ \\  \\|\\  \\ \\  \\|\\  \\ \\  \\\\\\  \\ \\  \\|\\  \\ \\  \\___|\\ \\  \\/  /|_   ",
-  " \\ \\  \\\\|__| \\  \\ \\   __  \\ \\   ____\\ \\   __  \\ \\   __  \\ \\  \\    \\ \\   ___  \\  ",
-  "  \\ \\  \\    \\ \\  \\ \\  \\ \\  \\ \\  \\___|\\ \\  \\ \\  \\ \\  \\ \\  \\ \\  \\____\\ \\  \\\\ \\  \\ ",
-  "   \\ \\__\\    \\ \\__\\ \\__\\ \\__\\ \\__\\    \\ \\__\\ \\__\\ \\__\\ \\__\\ \\_______\\ \\__\\\\ \\__\\",
-  "    \\|__|     \\|__|\\|__|\\|__|\\|__|     \\|__|\\|__|\\|__|\\|__|\\|_______|\\|__| \\|__|"
-].join("\n");
 
 function formatTimestamp(timestamp: number | null): string {
   if (typeof timestamp !== "number") {
@@ -81,11 +73,13 @@ function BookmarkButton({
 function ChatBubble({
   messageRef,
   bookmarked,
+  selected,
   onRowClick,
   onBookmarkToggle
 }: {
   messageRef: MessageRef;
   bookmarked: boolean;
+  selected: boolean;
   onRowClick: () => void;
   onBookmarkToggle: () => void;
 }): ReactElement {
@@ -94,9 +88,10 @@ function ChatBubble({
 
   const rowClass = isUser ? "mh-bubble-row-user" : "mh-bubble-row-assistant";
 
-  const bubbleClass = isUser
+  const baseBubbleClass = isUser
     ? bookmarked ? "mh-bubble mh-bubble-user-bookmarked" : "mh-bubble mh-bubble-user"
     : bookmarked ? "mh-bubble mh-bubble-assistant-bookmarked" : "mh-bubble mh-bubble-assistant";
+  const bubbleClass = selected ? `${baseBubbleClass} mh-bubble-selected` : baseBubbleClass;
 
   const roleRowClass = isUser ? "mh-role-row mh-role-row-user" : "mh-role-row mh-role-row-assistant";
   const roleLabelClass = bookmarked ? "mh-role-label mh-role-label-highlighted" : "mh-role-label mh-role-label-default";
@@ -105,14 +100,14 @@ function ChatBubble({
   const footerClass = bookmarked ? "mh-bubble-footer mh-bubble-footer-highlighted" : "mh-bubble-footer mh-bubble-footer-default";
 
   return (
-    <div className={rowClass}>
+    <div className={rowClass} data-message-ref-id={messageRef.id}>
       <div className={bubbleClass} onClick={onRowClick}>
         <div className={roleRowClass}>
           {isUser
             ? <><span className={roleLabelClass}>USER</span><IconPerson size={12} className={roleIconClass} /></>
             : <><IconSmartToy size={12} className={roleIconClass} /><span className={roleLabelClass}>ASSISTANT</span></>}
         </div>
-        <div className={bodyClass}>{messageRef.preview}</div>
+        <div className={bodyClass}>{messageRef.preview.length > 100 ? messageRef.preview.slice(0, 100) + "…" : messageRef.preview}</div>
         <div className={footerClass}>
           {isUser
             ? <><span className="mh-timestamp">{ts}</span><BookmarkButton bookmarked={bookmarked} onToggle={onBookmarkToggle} /></>
@@ -125,10 +120,12 @@ function ChatBubble({
 
 function BookmarkBubble({
   bookmark,
+  selected,
   onRowClick,
   onBookmarkToggle
 }: {
   bookmark: Bookmark;
+  selected: boolean;
   onRowClick: () => void;
   onBookmarkToggle: () => void;
 }): ReactElement {
@@ -137,18 +134,19 @@ function BookmarkBubble({
   const roleRowClass = isUser ? "mh-role-row mh-role-row-user" : "mh-role-row mh-role-row-assistant";
 
   const rowClass = isUser ? "mh-bubble-row-user" : "mh-bubble-row-assistant";
+  const bubbleBookmarkClass = selected ? "mh-bubble-bookmark mh-bubble-bookmark-selected" : "mh-bubble-bookmark";
 
   return (
     <div className="mh-bookmark-item">
       <div className={rowClass}>
-        <div className="mh-bubble-bookmark" onClick={onRowClick}>
+        <div className={bubbleBookmarkClass} onClick={onRowClick}>
           <div className={roleRowClass}>
             {isUser
               ? <><span className="mh-role-label mh-role-label-highlighted">USER</span><IconPerson size={12} className="mh-role-icon-highlighted" /></>
               : <><IconSmartToy size={12} className="mh-role-icon-highlighted" /><span className="mh-role-label mh-role-label-highlighted">ASSISTANT</span></>}
           </div>
           <div className={isUser ? "mh-body-user" : "mh-body-assistant"}>
-            {bookmark.messagePreview}
+            {bookmark.messagePreview.length > 100 ? bookmark.messagePreview.slice(0, 100) + "…" : bookmark.messagePreview}
           </div>
           <div className="mh-bubble-footer mh-bubble-footer-highlighted">
             {isUser
@@ -169,7 +167,8 @@ function SidebarApp({
   onRequestClose?: () => void;
 }): ReactElement {
   const state = useSidebarState(viewModel);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const bookmarkScrollRef = useRef<HTMLDivElement>(null);
   const isBaseTab = state.activeTab === "base";
   const hasConversation = typeof state.base.conversationId === "string";
 
@@ -182,8 +181,43 @@ function SidebarApp({
   }, [viewModel]);
 
   const onScrollTop = useCallback(() => {
-    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+    const ref = isBaseTab ? chatScrollRef : bookmarkScrollRef;
+    ref.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [isBaseTab]);
+
+  const prevConversationIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const id = state.base.conversationId;
+    if (id === null || !state.base.initialLoadSettled || !isBaseTab) {
+      return;
+    }
+    if (id === prevConversationIdRef.current) {
+      return;
+    }
+    prevConversationIdRef.current = id;
+
+    const scrollContainer = chatScrollRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+
+    const targetMessageId = state.selectedBaseMessageId;
+    const rafId = requestAnimationFrame(() => {
+      if (targetMessageId) {
+        const bubble = scrollContainer.querySelector(`[data-message-ref-id="${targetMessageId}"]`);
+        if (bubble) {
+          bubble.scrollIntoView({ block: "center" });
+          return;
+        }
+      }
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
+  }, [state.base.conversationId, state.base.initialLoadSettled, isBaseTab]);
 
   const syncStatus = isBaseTab
     ? !hasConversation
@@ -203,7 +237,7 @@ function SidebarApp({
     <div className="mh-root">
       <div className="mh-header">
         <div className="mh-header-logo-area">
-          <span className="mh-ascii-logo">{ASCII_LOGO}</span>
+          <IconLogo height={16.5} />
         </div>
         {onRequestClose ? (
           <button
@@ -241,8 +275,8 @@ function SidebarApp({
         </button>
       </nav>
 
-      <div className="mh-scroll" ref={scrollRef}>
-        <div className={isBaseTab ? "mh-content-chat" : "mh-content-chat mh-hidden"}>
+      <div className={isBaseTab ? "mh-scroll" : "mh-scroll mh-hidden"} ref={chatScrollRef}>
+        <div className="mh-content-chat">
           {hasConversation &&
           !state.base.loading &&
           state.base.error === null &&
@@ -254,14 +288,17 @@ function SidebarApp({
                 key={messageRef.id}
                 messageRef={messageRef}
                 bookmarked={viewModel.isBaseMessageBookmarked(messageRef)}
+                selected={state.selectedBaseMessageId === messageRef.id}
                 onRowClick={() => { viewModel.onBaseRowClick(messageRef); }}
                 onBookmarkToggle={() => { void viewModel.onBaseBookmarkToggle(messageRef); }}
               />
             ))
           )}
         </div>
+      </div>
 
-        <div className={isBaseTab ? "mh-content-bookmark mh-hidden" : "mh-content-bookmark"}>
+      <div className={isBaseTab ? "mh-scroll mh-hidden" : "mh-scroll"} ref={bookmarkScrollRef}>
+        <div className="mh-content-bookmark">
           {!state.bookmarks.loading &&
           state.bookmarks.error === null &&
           state.bookmarks.items.length === 0 ? (
@@ -271,6 +308,7 @@ function SidebarApp({
               <BookmarkBubble
                 key={bookmark.id}
                 bookmark={bookmark}
+                selected={state.selectedBookmarkId === bookmark.id}
                 onRowClick={() => { viewModel.onBookmarkRowClick(bookmark); }}
                 onBookmarkToggle={() => { void viewModel.onBookmarkToggle(bookmark); }}
               />

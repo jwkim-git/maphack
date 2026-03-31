@@ -53,6 +53,8 @@ async function buildEntrypoints() {
         format: "iife",
         target: "es2020",
         platform: "browser",
+        define: { "process.env.NODE_ENV": '"production"' },
+        minify: true,
         legalComments: "none",
         logLevel: "silent"
       })

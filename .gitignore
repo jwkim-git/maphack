@@ -7,10 +7,18 @@
 **/__tests__/
 /output/
 
+# Build Output
+**/dist/
+
 # Dependencies
 /node_modules/
+
+# Distribution Archives
+apps/extension/MH200/
+apps/extension/MH200.zip
 
 # Agent/System
 /.agents/
 /.codex/
 .mcp.json
+.playwright-mcp/

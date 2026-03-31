@@ -1,6 +1,7 @@
 import type { ConversationSource } from "../../../../../../packages/core/src/application/ports/ConversationSourcePort";
 import { toMapHackMessageId } from "../../../../../../packages/core/src/domain/value/MapHackMessageId";
 import type { CurrentChatgptConversation } from "./currentConversation";
+import { CHATGPT_AGENT_TURN_SELECTOR } from "./selectors";
 import type { ChatgptCaptureScope } from "./threadScope";
 import { parseChatgptTurnIndexFromElement } from "./turnIndex";
 
@@ -42,6 +43,11 @@ type ChatgptSourceDataCollectionStrategyContract = {
         image: "[Image]";
         attachment: "[Attachment]";
       };
+    };
+    agentTurn: {
+      selector: string;
+      imageAltSelector: "img[alt]";
+      imageIdParamName: "id";
     };
   };
   derived: {
@@ -86,6 +92,11 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
         image: "[Image]",
         attachment: "[Attachment]"
       }
+    },
+    agentTurn: {
+      selector: CHATGPT_AGENT_TURN_SELECTOR,
+      imageAltSelector: "img[alt]",
+      imageIdParamName: "id"
     }
   },
   derived: {
@@ -134,9 +145,35 @@ function parseRoleFromElement(
   return null;
 }
 
+function parseAgentTurnFileId(
+  element: Element,
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["agentTurn"]
+): string | null {
+  const isAgentTurn =
+    element.matches(strategy.selector) || element.querySelector(strategy.selector) !== null;
+  if (!isAgentTurn) {
+    return null;
+  }
+
+  const img = element.querySelector(strategy.imageAltSelector);
+  const src = img?.getAttribute("src");
+  if (!src) {
+    return null;
+  }
+
+  try {
+    const url = new URL(src);
+    const fileId = url.searchParams.get(strategy.imageIdParamName);
+    return fileId && fileId.length > 0 ? fileId : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseMessageOriginalId(
   element: Element,
-  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["messageId"]
+  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["messageId"],
+  agentTurnStrategy: ChatgptSourceDataCollectionStrategyContract["fields"]["agentTurn"]
 ): string | null {
   const primary = normalizeText(element.getAttribute(strategy.primaryAttribute));
   if (primary.length > 0) {
@@ -149,7 +186,7 @@ function parseMessageOriginalId(
     return descendantId;
   }
 
-  return null;
+  return parseAgentTurnFileId(element, agentTurnStrategy);
 }
 
 function parseContent(
@@ -174,11 +211,13 @@ function detectMediaPreview(
   element: Element,
   strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["mediaFallback"]
 ): string {
-  if (element.querySelector(strategy.imageSelector)) {
-    return strategy.labels.image;
+  const img = element.querySelector(strategy.imageSelector);
+  if (!img) {
+    return strategy.labels.attachment;
   }
 
-  return strategy.labels.attachment;
+  const alt = normalizeText(img.getAttribute("alt"));
+  return alt.length > 0 ? alt : strategy.labels.image;
 }
 
 function hasActiveAssistantGenerationSignal(
@@ -206,7 +245,7 @@ export function collectChatgptSourceData(
 
   for (let index = 0; index < messageElements.length; index += 1) {
     const element = messageElements[index];
-    const originalId = parseMessageOriginalId(element, strategy.fields.messageId);
+    const originalId = parseMessageOriginalId(element, strategy.fields.messageId, strategy.fields.agentTurn);
     if (!originalId) {
       continue;
     }

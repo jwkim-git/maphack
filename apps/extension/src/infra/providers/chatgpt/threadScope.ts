@@ -1,4 +1,5 @@
 import {
+  CHATGPT_AGENT_TURN_SELECTOR,
   CHATGPT_MESSAGE_CONTAINER_FALLBACKS,
   CHATGPT_MESSAGE_CONTAINER_PRIMARY,
   CHATGPT_SCROLL_CONTAINER_PRIMARY
@@ -9,10 +10,26 @@ export type ChatgptCaptureScope = {
   messageContainers: Element[];
 };
 
+function resolveAgentTurnContainers(root: ParentNode): Element[] {
+  const agentTurns = Array.from(root.querySelectorAll(CHATGPT_AGENT_TURN_SELECTOR));
+  return agentTurns.filter((el) => el.querySelector("img[src]") !== null);
+}
+
+function sortByDocumentOrder(elements: Element[]): Element[] {
+  return elements.sort((a, b) => {
+    const position = a.compareDocumentPosition(b);
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  });
+}
+
 function resolveChatgptMessageContainers(root: ParentNode): Element[] {
   const fromPrimary = Array.from(root.querySelectorAll(CHATGPT_MESSAGE_CONTAINER_PRIMARY));
-  if (fromPrimary.length > 0) {
-    return fromPrimary;
+  const fromAgentTurn = resolveAgentTurnContainers(root);
+
+  if (fromPrimary.length > 0 || fromAgentTurn.length > 0) {
+    return sortByDocumentOrder([...fromPrimary, ...fromAgentTurn]);
   }
 
   const hasCommittedMessageDescendant = (element: Element): boolean =>

@@ -16,6 +16,7 @@ export interface SidebarBaseTabState {
   messages: MessageRef[];
   loading: boolean;
   error: string | null;
+  initialLoadSettled: boolean;
 }
 
 export interface SidebarBookmarksTabState {
@@ -28,6 +29,8 @@ export interface SidebarViewState {
   activeTab: SidebarTab;
   base: SidebarBaseTabState;
   bookmarks: SidebarBookmarksTabState;
+  selectedBaseMessageId: string | null;
+  selectedBookmarkId: string | null;
 }
 
 type StateListener = (state: SidebarViewState) => void;
@@ -44,6 +47,7 @@ const LIST_BASE_RETRYABLE_ERRORS = new Set([
 ]);
 const STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS = [300, 500, 800, 1_200, 2_000, 3_000] as const;
 const SOURCE_UPDATE_RETRY_DELAY_MS = 500;
+const SELECTED_BOOKMARK_STORAGE_KEY = "maphack:selected-bookmark-id";
 
 export class SidebarViewModel {
   private state: SidebarViewState = {
@@ -52,13 +56,16 @@ export class SidebarViewModel {
       conversationId: null,
       messages: [],
       loading: false,
-      error: null
+      error: null,
+      initialLoadSettled: false
     },
     bookmarks: {
       items: [],
       loading: false,
       error: null
-    }
+    },
+    selectedBaseMessageId: null,
+    selectedBookmarkId: null
   };
 
   private readonly listeners = new Set<StateListener>();
@@ -105,13 +112,16 @@ export class SidebarViewModel {
           }
         })),
         loading: this.state.base.loading,
-        error: this.state.base.error
+        error: this.state.base.error,
+        initialLoadSettled: this.state.base.initialLoadSettled
       },
       bookmarks: {
         items: this.state.bookmarks.items.map((bookmark) => ({ ...bookmark })),
         loading: this.state.bookmarks.loading,
         error: this.state.bookmarks.error
-      }
+      },
+      selectedBaseMessageId: this.state.selectedBaseMessageId,
+      selectedBookmarkId: this.state.selectedBookmarkId
     };
   }
 
@@ -143,6 +153,7 @@ export class SidebarViewModel {
 
     await this.reloadBookmarks();
     await this.reconcileActiveConversation();
+    this.restoreSelectedBookmarkFromSession();
   }
 
   setActiveTab(tab: SidebarTab): void {
@@ -222,6 +233,8 @@ export class SidebarViewModel {
       return;
     }
 
+    this.patchState({ selectedBaseMessageId: messageRef.id });
+
     this.runTurnNavigation(
       this.turnNavigator.navigateWithinConversation(
         this.createTurnNavigationTarget(
@@ -236,6 +249,8 @@ export class SidebarViewModel {
   }
 
   onBookmarkRowClick(bookmark: Bookmark): void {
+    this.patchState({ selectedBookmarkId: bookmark.id });
+
     const target = this.createTurnNavigationTarget(
       bookmark.conversationId,
       bookmark.conversationUrl,
@@ -252,6 +267,7 @@ export class SidebarViewModel {
       return;
     }
 
+    this.writeSelectedBookmarkToSession(bookmark.id, bookmark.messageId);
     this.runTurnNavigation(
       this.turnNavigator.navigateAcrossConversations(target),
       "bookmark-row-cross-conversation-navigation-failed"
@@ -364,11 +380,13 @@ export class SidebarViewModel {
       return;
     }
 
+    this.patchState({ selectedBaseMessageId: null });
     this.patchBaseState({
       conversationId: activeConversationId,
       messages: [],
       loading: activeConversationId !== null,
-      error: null
+      error: null,
+      initialLoadSettled: false
     });
   }
 
@@ -509,6 +527,13 @@ export class SidebarViewModel {
       pendingUpdates.has(startedActiveConversationId)
     ) {
       baseReloadOutcome = await this.loadBaseMessages(startedActiveConversationId);
+      if (
+        baseReloadOutcome === "applied" &&
+        !this.state.base.initialLoadSettled &&
+        this.state.base.conversationId === startedActiveConversationId
+      ) {
+        this.patchBaseState({ initialLoadSettled: true });
+      }
     }
 
     const bookmarkListOutcome = await this.loadBookmarks();
@@ -686,6 +711,11 @@ export class SidebarViewModel {
 
   private applyBookmarkRemoved(bookmarkId: string): void {
     this.bookmarkMutationRevision += 1;
+
+    if (this.state.selectedBookmarkId === bookmarkId) {
+      this.patchState({ selectedBookmarkId: null });
+    }
+
     this.patchBookmarkState({
       items: this.state.bookmarks.items.filter((item) => item.id !== bookmarkId),
       loading: false,
@@ -723,6 +753,39 @@ export class SidebarViewModel {
         ...partial
       }
     });
+  }
+
+  private writeSelectedBookmarkToSession(bookmarkId: string, messageId: string): void {
+    try {
+      sessionStorage.setItem(
+        SELECTED_BOOKMARK_STORAGE_KEY,
+        JSON.stringify({ bookmarkId, messageId })
+      );
+    } catch {}
+  }
+
+  private restoreSelectedBookmarkFromSession(): void {
+    try {
+      const raw = sessionStorage.getItem(SELECTED_BOOKMARK_STORAGE_KEY);
+      sessionStorage.removeItem(SELECTED_BOOKMARK_STORAGE_KEY);
+      if (typeof raw !== "string" || raw.length === 0) {
+        return;
+      }
+
+      const parsed: unknown = JSON.parse(raw);
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        typeof (parsed as Record<string, unknown>).bookmarkId === "string" &&
+        typeof (parsed as Record<string, unknown>).messageId === "string"
+      ) {
+        const data = parsed as { bookmarkId: string; messageId: string };
+        this.patchState({
+          selectedBookmarkId: data.bookmarkId,
+          selectedBaseMessageId: data.messageId
+        });
+      }
+    } catch {}
   }
 
   private patchState(partial: Partial<SidebarViewState>): void {

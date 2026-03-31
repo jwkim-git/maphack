@@ -89,7 +89,7 @@ export function findChatgptTurnElementByTurnIndex(
         continue;
       }
 
-      return candidate.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? candidate;
+      return candidate;
     }
   }
 
@@ -112,5 +112,5 @@ export function findChatgptTurnElementByMessageId(
     return null;
   }
 
-  return exactMessageElement.closest(CHATGPT_TURN_CONTAINER_SELECTOR) ?? exactMessageElement;
+  return exactMessageElement;
 }
