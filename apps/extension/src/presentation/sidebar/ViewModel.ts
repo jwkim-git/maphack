@@ -3,6 +3,7 @@ import type {
   TurnNavigator
 } from "../../application/ports/TurnNavigator";
 import type {
+  BookmarksUpdatedSignal,
   SidebarGateway,
   SourceUpdatedSignal
 } from "../../application/ports/SidebarGateway";
@@ -31,6 +32,7 @@ export interface SidebarViewState {
   bookmarks: SidebarBookmarksTabState;
   selectedBaseMessageId: string | null;
   selectedBookmarkId: string | null;
+  assistantGenerating: boolean;
 }
 
 type StateListener = (state: SidebarViewState) => void;
@@ -38,7 +40,7 @@ type ReadActiveConversationId = () => string | null;
 type SubscribeActiveConversationContextInvalidation =
   (onInvalidate: () => void) => () => void;
 type BaseReloadOutcome = "applied" | "skipped_due_to_navigation" | "source_missing" | "failed";
-type BookmarkListReloadOutcome = "applied" | "failed";
+type BookmarkListReloadOutcome = "applied" | "failed" | "stale_ignored";
 
 const LIST_BASE_RETRY_DELAYS_MS = [0, 120, 360] as const;
 const LIST_BASE_RETRYABLE_ERRORS = new Set([
@@ -47,6 +49,7 @@ const LIST_BASE_RETRYABLE_ERRORS = new Set([
 ]);
 const STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS = [300, 500, 800, 1_200, 2_000, 3_000] as const;
 const SOURCE_UPDATE_RETRY_DELAY_MS = 500;
+const BOOKMARK_UPDATE_RETRY_DELAY_MS = 500;
 const SELECTED_BOOKMARK_STORAGE_KEY = "maphack:selected-bookmark-id";
 
 export class SidebarViewModel {
@@ -65,22 +68,28 @@ export class SidebarViewModel {
       error: null
     },
     selectedBaseMessageId: null,
-    selectedBookmarkId: null
+    selectedBookmarkId: null,
+    assistantGenerating: false
   };
 
   private readonly listeners = new Set<StateListener>();
-  private readonly lastAppliedSeqByConversationId = new Map<string, number>();
-  private readonly pendingSeqByConversationId = new Map<string, number>();
-  private activeSourceUpdateSessionId: string | null = null;
+  private readonly lastAppliedSourceRevisionByConversationId = new Map<string, number>();
+  private readonly pendingSourceRevisionByConversationId = new Map<string, number>();
+  private activeSourceUpdateBackgroundSessionId: string | null = null;
+  private lastAppliedBookmarkRevision: number | null = null;
+  private pendingBookmarkRevision: number | null = null;
+  private activeBookmarkUpdateBackgroundSessionId: string | null = null;
   private unsubscribeSourceUpdated: (() => void) | null = null;
+  private unsubscribeBookmarksUpdated: (() => void) | null = null;
   private unsubscribeActiveConversationContextInvalidation: (() => void) | null = null;
   private reloadBaseInFlight: Promise<BaseReloadOutcome> | null = null;
   private reloadBaseConversationIdInFlight: string | null = null;
   private reloadBookmarksInFlight: Promise<BookmarkListReloadOutcome> | null = null;
   private bookmarkMutationRevision = 0;
-  private needsBookmarkReloadAfterMutation = false;
   private sourceUpdateDrainInFlight: Promise<void> | null = null;
+  private bookmarkUpdateDrainInFlight: Promise<void> | null = null;
   private sourceUpdateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private bookmarkUpdateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
   constructor(
@@ -121,7 +130,8 @@ export class SidebarViewModel {
         error: this.state.bookmarks.error
       },
       selectedBaseMessageId: this.state.selectedBaseMessageId,
-      selectedBookmarkId: this.state.selectedBookmarkId
+      selectedBookmarkId: this.state.selectedBookmarkId,
+      assistantGenerating: this.state.assistantGenerating
     };
   }
 
@@ -131,11 +141,15 @@ export class SidebarViewModel {
     }
 
     if (this.unsubscribeSourceUpdated === null) {
-      this.unsubscribeSourceUpdated = this.gateway.subscribeSourceUpdated(
-        (signal) => {
-          this.onSourceUpdated(signal);
-        }
-      );
+      this.unsubscribeSourceUpdated = this.gateway.subscribeSourceUpdated((signal) => {
+        this.onSourceUpdated(signal);
+      });
+    }
+
+    if (this.unsubscribeBookmarksUpdated === null) {
+      this.unsubscribeBookmarksUpdated = this.gateway.subscribeBookmarksUpdated((signal) => {
+        this.onBookmarksUpdated(signal);
+      });
     }
 
     if (this.unsubscribeActiveConversationContextInvalidation === null) {
@@ -166,12 +180,18 @@ export class SidebarViewModel {
 
   dispose(): void {
     this.disposed = true;
-    this.pendingSeqByConversationId.clear();
-    this.lastAppliedSeqByConversationId.clear();
-    this.activeSourceUpdateSessionId = null;
+    this.pendingSourceRevisionByConversationId.clear();
+    this.lastAppliedSourceRevisionByConversationId.clear();
+    this.activeSourceUpdateBackgroundSessionId = null;
+    this.pendingBookmarkRevision = null;
+    this.lastAppliedBookmarkRevision = null;
+    this.activeBookmarkUpdateBackgroundSessionId = null;
     this.clearScheduledSourceUpdateDrain();
+    this.clearScheduledBookmarkUpdateDrain();
     this.unsubscribeSourceUpdated?.();
     this.unsubscribeSourceUpdated = null;
+    this.unsubscribeBookmarksUpdated?.();
+    this.unsubscribeBookmarksUpdated = null;
     this.unsubscribeActiveConversationContextInvalidation?.();
     this.unsubscribeActiveConversationContextInvalidation = null;
     this.listeners.clear();
@@ -201,7 +221,6 @@ export class SidebarViewModel {
     }
 
     this.applyBookmarkAdded(result.value);
-    this.reconcileBookmarksFromStore();
     return true;
   }
 
@@ -219,7 +238,6 @@ export class SidebarViewModel {
     }
 
     this.applyBookmarkRemoved(result.value);
-    this.reconcileBookmarksFromStore();
     return true;
   }
 
@@ -292,28 +310,71 @@ export class SidebarViewModel {
       return;
     }
 
-    if (this.activeSourceUpdateSessionId !== signal.sessionId) {
-      this.activeSourceUpdateSessionId = signal.sessionId;
-      this.lastAppliedSeqByConversationId.clear();
-      this.pendingSeqByConversationId.clear();
+    if (this.activeSourceUpdateBackgroundSessionId !== signal.backgroundSessionId) {
+      this.activeSourceUpdateBackgroundSessionId = signal.backgroundSessionId;
+      this.lastAppliedSourceRevisionByConversationId.clear();
+      this.pendingSourceRevisionByConversationId.clear();
+    }
+
+    if (this.state.assistantGenerating !== signal.assistantGenerating) {
+      this.patchState({ assistantGenerating: signal.assistantGenerating });
     }
 
     void this.turnNavigator.consumePendingNavigation(signal.conversationId).catch((error: unknown) => {
       console.error("consume-pending-navigation-failed", error);
     });
 
-    const lastAppliedSeq = this.lastAppliedSeqByConversationId.get(signal.conversationId);
-    if (lastAppliedSeq !== undefined && signal.seq <= lastAppliedSeq) {
+    const lastAppliedSourceRevision = this.lastAppliedSourceRevisionByConversationId.get(
+      signal.conversationId
+    );
+    if (
+      lastAppliedSourceRevision !== undefined &&
+      signal.sourceRevision <= lastAppliedSourceRevision
+    ) {
       return;
     }
 
-    const pendingSeq = this.pendingSeqByConversationId.get(signal.conversationId);
-    if (pendingSeq !== undefined && signal.seq <= pendingSeq) {
+    const pendingSourceRevision = this.pendingSourceRevisionByConversationId.get(
+      signal.conversationId
+    );
+    if (
+      pendingSourceRevision !== undefined &&
+      signal.sourceRevision <= pendingSourceRevision
+    ) {
       return;
     }
 
-    this.pendingSeqByConversationId.set(signal.conversationId, signal.seq);
+    this.pendingSourceRevisionByConversationId.set(signal.conversationId, signal.sourceRevision);
     this.ensureSourceUpdateDrain();
+  }
+
+  private onBookmarksUpdated(signal: BookmarksUpdatedSignal): void {
+    if (this.disposed) {
+      return;
+    }
+
+    if (this.activeBookmarkUpdateBackgroundSessionId !== signal.backgroundSessionId) {
+      this.activeBookmarkUpdateBackgroundSessionId = signal.backgroundSessionId;
+      this.lastAppliedBookmarkRevision = null;
+      this.pendingBookmarkRevision = null;
+    }
+
+    if (
+      this.lastAppliedBookmarkRevision !== null &&
+      signal.bookmarkRevision <= this.lastAppliedBookmarkRevision
+    ) {
+      return;
+    }
+
+    if (
+      this.pendingBookmarkRevision !== null &&
+      signal.bookmarkRevision <= this.pendingBookmarkRevision
+    ) {
+      return;
+    }
+
+    this.pendingBookmarkRevision = signal.bookmarkRevision;
+    this.ensureBookmarkUpdateDrain();
   }
 
   private createTurnNavigationTarget(
@@ -399,6 +460,15 @@ export class SidebarViewModel {
     this.sourceUpdateRetryTimer = null;
   }
 
+  private clearScheduledBookmarkUpdateDrain(): void {
+    if (this.bookmarkUpdateRetryTimer === null) {
+      return;
+    }
+
+    clearTimeout(this.bookmarkUpdateRetryTimer);
+    this.bookmarkUpdateRetryTimer = null;
+  }
+
   private scheduleDelayedSourceUpdateDrain(): void {
     if (this.disposed || this.sourceUpdateRetryTimer !== null) {
       return;
@@ -410,11 +480,22 @@ export class SidebarViewModel {
     }, SOURCE_UPDATE_RETRY_DELAY_MS);
   }
 
+  private scheduleDelayedBookmarkUpdateDrain(): void {
+    if (this.disposed || this.bookmarkUpdateRetryTimer !== null) {
+      return;
+    }
+
+    this.bookmarkUpdateRetryTimer = setTimeout(() => {
+      this.bookmarkUpdateRetryTimer = null;
+      this.ensureBookmarkUpdateDrain();
+    }, BOOKMARK_UPDATE_RETRY_DELAY_MS);
+  }
+
   private ensureSourceUpdateDrain(): void {
     if (
       this.disposed ||
       this.sourceUpdateDrainInFlight !== null ||
-      this.pendingSeqByConversationId.size === 0
+      this.pendingSourceRevisionByConversationId.size === 0
     ) {
       return;
     }
@@ -430,31 +511,69 @@ export class SidebarViewModel {
     });
   }
 
+  private ensureBookmarkUpdateDrain(): void {
+    if (
+      this.disposed ||
+      this.bookmarkUpdateDrainInFlight !== null ||
+      this.pendingBookmarkRevision === null
+    ) {
+      return;
+    }
+
+    this.clearScheduledBookmarkUpdateDrain();
+
+    this.bookmarkUpdateDrainInFlight = this.drainBookmarkUpdates().finally(() => {
+      this.bookmarkUpdateDrainInFlight = null;
+
+      if (this.bookmarkUpdateRetryTimer === null) {
+        this.ensureBookmarkUpdateDrain();
+      }
+    });
+  }
+
   private consumePendingSourceUpdates(): Map<string, number> {
-    const pending = new Map(this.pendingSeqByConversationId);
-    this.pendingSeqByConversationId.clear();
+    const pending = new Map(this.pendingSourceRevisionByConversationId);
+    this.pendingSourceRevisionByConversationId.clear();
     return pending;
   }
 
-  private requeueSourceUpdate(conversationId: string, seq: number): void {
-    const pendingSeq = this.pendingSeqByConversationId.get(conversationId);
-    if (pendingSeq === undefined || seq > pendingSeq) {
-      this.pendingSeqByConversationId.set(conversationId, seq);
+  private consumePendingBookmarkUpdate(): number | null {
+    const pending = this.pendingBookmarkRevision;
+    this.pendingBookmarkRevision = null;
+    return pending;
+  }
+
+  private requeueSourceUpdate(conversationId: string, sourceRevision: number): void {
+    const pendingSourceRevision = this.pendingSourceRevisionByConversationId.get(conversationId);
+    if (pendingSourceRevision === undefined || sourceRevision > pendingSourceRevision) {
+      this.pendingSourceRevisionByConversationId.set(conversationId, sourceRevision);
     }
   }
 
   private requeueSourceUpdates(updates: ReadonlyMap<string, number>): void {
-    for (const [conversationId, seq] of updates.entries()) {
-      this.requeueSourceUpdate(conversationId, seq);
+    for (const [conversationId, sourceRevision] of updates.entries()) {
+      this.requeueSourceUpdate(conversationId, sourceRevision);
     }
   }
 
   private markAppliedSourceUpdates(appliedUpdates: ReadonlyMap<string, number>): void {
-    for (const [conversationId, seq] of appliedUpdates.entries()) {
-      const previous = this.lastAppliedSeqByConversationId.get(conversationId);
-      if (previous === undefined || seq > previous) {
-        this.lastAppliedSeqByConversationId.set(conversationId, seq);
+    for (const [conversationId, sourceRevision] of appliedUpdates.entries()) {
+      const previous = this.lastAppliedSourceRevisionByConversationId.get(conversationId);
+      if (previous === undefined || sourceRevision > previous) {
+        this.lastAppliedSourceRevisionByConversationId.set(conversationId, sourceRevision);
       }
+    }
+  }
+
+  private requeueBookmarkUpdate(bookmarkRevision: number): void {
+    if (this.pendingBookmarkRevision === null || bookmarkRevision > this.pendingBookmarkRevision) {
+      this.pendingBookmarkRevision = bookmarkRevision;
+    }
+  }
+
+  private markAppliedBookmarkUpdate(bookmarkRevision: number): void {
+    if (this.lastAppliedBookmarkRevision === null || bookmarkRevision > this.lastAppliedBookmarkRevision) {
+      this.lastAppliedBookmarkRevision = bookmarkRevision;
     }
   }
 
@@ -502,11 +621,6 @@ export class SidebarViewModel {
     } finally {
       if (this.reloadBookmarksInFlight === nextReload) {
         this.reloadBookmarksInFlight = null;
-
-        if (this.needsBookmarkReloadAfterMutation && !this.disposed) {
-          this.needsBookmarkReloadAfterMutation = false;
-          void this.loadBookmarks();
-        }
       }
     }
   }
@@ -536,15 +650,8 @@ export class SidebarViewModel {
       }
     }
 
-    const bookmarkListOutcome = await this.loadBookmarks();
     const finalActiveConversationId = this.readActiveConversationId();
     this.syncBaseStateToActiveConversation(finalActiveConversationId);
-
-    if (bookmarkListOutcome === "failed") {
-      this.requeueSourceUpdates(pendingUpdates);
-      this.scheduleDelayedSourceUpdateDrain();
-      return;
-    }
 
     const appliedUpdates = new Map(pendingUpdates);
 
@@ -571,6 +678,27 @@ export class SidebarViewModel {
     }
 
     this.markAppliedSourceUpdates(appliedUpdates);
+  }
+
+  private async drainBookmarkUpdates(): Promise<void> {
+    const pendingBookmarkRevision = this.consumePendingBookmarkUpdate();
+    if (pendingBookmarkRevision === null || this.disposed) {
+      return;
+    }
+
+    const bookmarkListOutcome = await this.loadBookmarks();
+    if (bookmarkListOutcome === "failed") {
+      this.requeueBookmarkUpdate(pendingBookmarkRevision);
+      this.scheduleDelayedBookmarkUpdateDrain();
+      return;
+    }
+
+    if (bookmarkListOutcome === "stale_ignored") {
+      this.requeueBookmarkUpdate(pendingBookmarkRevision);
+      return;
+    }
+
+    this.markAppliedBookmarkUpdate(pendingBookmarkRevision);
   }
 
   private async recoverInitialBaseIfEmpty(conversationId: string): Promise<void> {
@@ -682,7 +810,7 @@ export class SidebarViewModel {
 
     if (mutationRevisionAtRequestStart !== this.bookmarkMutationRevision) {
       this.patchBookmarkState({ loading: false, error: null });
-      return "applied";
+      return "stale_ignored";
     }
 
     if (!result.ok) {
@@ -721,20 +849,6 @@ export class SidebarViewModel {
       loading: false,
       error: null
     });
-  }
-
-  private reconcileBookmarksFromStore(): void {
-    if (this.disposed) {
-      return;
-    }
-
-    if (this.reloadBookmarksInFlight) {
-      this.needsBookmarkReloadAfterMutation = true;
-      return;
-    }
-
-    this.needsBookmarkReloadAfterMutation = false;
-    void this.loadBookmarks();
   }
 
   private patchBaseState(partial: Partial<SidebarBaseTabState>): void {

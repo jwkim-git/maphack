@@ -7,4 +7,5 @@ export interface UserDataBookmarkPort {
   list(): Promise<Bookmark[]>;
   listByConversationId(conversationId: Bookmark["conversationId"]): Promise<Bookmark[]>;
   updateEdited(bookmarkId: MapHackBookmarkId, edited: boolean): Promise<void>;
+  updateTimestamp(bookmarkId: MapHackBookmarkId, timestamp: number): Promise<void>;
 }

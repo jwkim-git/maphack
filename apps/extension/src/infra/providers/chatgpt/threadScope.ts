@@ -12,7 +12,10 @@ export type ChatgptCaptureScope = {
 
 function resolveAgentTurnContainers(root: ParentNode): Element[] {
   const agentTurns = Array.from(root.querySelectorAll(CHATGPT_AGENT_TURN_SELECTOR));
-  return agentTurns.filter((el) => el.querySelector("img[src]") !== null);
+  return agentTurns.filter((el) =>
+    el.querySelector("img[src]") !== null &&
+    el.closest("[data-message-id]") === null
+  );
 }
 
 function sortByDocumentOrder(elements: Element[]): Element[] {

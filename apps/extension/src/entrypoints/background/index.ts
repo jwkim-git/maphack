@@ -29,7 +29,7 @@ function createDefaultDependencies(): BackgroundRuntimeDependencies {
     bookmarkStore,
     captureConversation: new CaptureConversation(sourceStore),
     listBaseMessages: new ListBaseMessages(sourceStore),
-    addBookmark: new AddBookmark(bookmarkStore),
+    addBookmark: new AddBookmark(bookmarkStore, sourceStore),
     removeBookmark: new RemoveBookmark(bookmarkStore),
     listBookmarks: new ListBookmarks(bookmarkStore)
   };

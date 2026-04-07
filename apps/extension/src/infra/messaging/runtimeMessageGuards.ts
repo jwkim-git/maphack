@@ -5,6 +5,7 @@ import {
   APPLY_TIMESTAMPS_FAILURE_TYPE,
   APPLY_TIMESTAMPS_REQUEST_TYPE,
   APPLY_TIMESTAMPS_SUCCESS_TYPE,
+  BOOKMARKS_UPDATED_EVENT_TYPE,
   CAPTURE_CONVERSATION_FAILURE_TYPE,
   CAPTURE_CONVERSATION_REQUEST_TYPE,
   CAPTURE_CONVERSATION_SUCCESS_TYPE,
@@ -24,6 +25,7 @@ import {
   type ApplyTimestampsFailure,
   type ApplyTimestampsRequest,
   type ApplyTimestampsSuccess,
+  type BookmarksUpdatedEvent,
   type CaptureConversationFailure,
   type CaptureConversationRequest,
   type CaptureConversationSuccess,
@@ -59,7 +61,8 @@ export function isCaptureConversationRequest(value: unknown): value is CaptureCo
     value.type === CAPTURE_CONVERSATION_REQUEST_TYPE &&
     typeof value.requestId === "string" &&
     (value.captureMode === "snapshot" || value.captureMode === "delta") &&
-    isRuntimeConversationSource(value.source)
+    isRuntimeConversationSource(value.source) &&
+    typeof value.assistantGenerating === "boolean"
   );
 }
 
@@ -279,14 +282,7 @@ export function isApplyTimestampsSuccess(value: unknown): value is ApplyTimestam
     hasRuntimeEnvelope(value) &&
     value.type === APPLY_TIMESTAMPS_SUCCESS_TYPE &&
     typeof value.requestId === "string" &&
-    typeof value.conversationId === "string" &&
-    typeof value.unresolvedCount === "number" &&
-    Number.isInteger(value.unresolvedCount) &&
-    value.unresolvedCount >= 0 &&
-    typeof value.ready === "boolean" &&
-    typeof value.seq === "number" &&
-    Number.isInteger(value.seq) &&
-    value.seq >= 0
+    typeof value.conversationId === "string"
   );
 }
 
@@ -300,7 +296,7 @@ export function isApplyTimestampsFailure(value: unknown): value is ApplyTimestam
     value.type === APPLY_TIMESTAMPS_FAILURE_TYPE &&
     typeof value.requestId === "string" &&
     typeof value.conversationId === "string" &&
-    typeof value.error === "string"
+    (value.error === "snapshot-required" || value.error === "apply-failed")
   );
 }
 
@@ -313,10 +309,27 @@ export function isSourceUpdatedEvent(value: unknown): value is SourceUpdatedEven
     hasRuntimeEnvelope(value) &&
     value.type === SOURCE_UPDATED_EVENT_TYPE &&
     typeof value.conversationId === "string" &&
-    value.ready === true &&
-    typeof value.seq === "number" &&
-    Number.isFinite(value.seq) &&
-    typeof value.sessionId === "string" &&
-    value.sessionId.length > 0
+    typeof value.sourceRevision === "number" &&
+    Number.isInteger(value.sourceRevision) &&
+    value.sourceRevision >= 0 &&
+    typeof value.backgroundSessionId === "string" &&
+    value.backgroundSessionId.length > 0 &&
+    typeof value.assistantGenerating === "boolean"
+  );
+}
+
+export function isBookmarksUpdatedEvent(value: unknown): value is BookmarksUpdatedEvent {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  return (
+    hasRuntimeEnvelope(value) &&
+    value.type === BOOKMARKS_UPDATED_EVENT_TYPE &&
+    typeof value.bookmarkRevision === "number" &&
+    Number.isInteger(value.bookmarkRevision) &&
+    value.bookmarkRevision >= 0 &&
+    typeof value.backgroundSessionId === "string" &&
+    value.backgroundSessionId.length > 0
   );
 }

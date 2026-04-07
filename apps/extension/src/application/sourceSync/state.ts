@@ -17,6 +17,7 @@ export type SourceSyncState = {
   lastCommittedScopeIds: Set<string>;
   transitionRetryAt: number | null;
   pendingTimestampRequests: Map<string, PendingTimestampRequest>;
+  lastAssistantContentForStabilization: string | null;
 };
 
 export { type RequestState, type PendingTimestampRequest };
@@ -30,16 +31,18 @@ export function bootstrapSourceSyncState(): SourceSyncState {
     lastCommittedConversationId: null,
     lastCommittedScopeIds: new Set<string>(),
     transitionRetryAt: null,
-    pendingTimestampRequests: new Map<string, PendingTimestampRequest>()
+    pendingTimestampRequests: new Map<string, PendingTimestampRequest>(),
+    lastAssistantContentForStabilization: null
   };
 }
 
-function resetConversationSyncState(state: SourceSyncState): void {
+export function resetConversationSyncState(state: SourceSyncState): void {
   state.requestStateByMessageId.clear();
   state.previousMessageIdByTurnIndex.clear();
   state.hasInitialSnapshotCaptured = false;
   state.transitionRetryAt = null;
   state.pendingTimestampRequests.clear();
+  state.lastAssistantContentForStabilization = null;
 }
 
 export function syncConversationIdState(nextConversationId: string, state: SourceSyncState): void {

@@ -4,7 +4,6 @@ import type {
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
 import type { TimestampPort } from "../../../../../packages/core/src/application/ports/TimestampPort";
 import type { UserDataBookmarkPort } from "../../../../../packages/core/src/application/ports/UserDataBookmarkPort";
-import { countUnresolvedMessageRefs } from "../../../../../packages/core/src/application/policies/countUnresolvedMessageRefs";
 import type { Bookmark } from "../../../../../packages/core/src/domain/entities/Bookmark";
 import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
 import type { MapHackBookmarkId } from "../../../../../packages/core/src/domain/value/MapHackBookmarkId";
@@ -51,14 +50,22 @@ import {
 } from "../../infra/messaging/runtimeMapper";
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
 import { reconcileEditedBookmarks } from "../../application/reconcileEditedBookmarks";
-import { resolveNextConversationSeq, emitSourceUpdatedEvent } from "../../application/sourceUpdateSession";
+import { reconcileBookmarkTimestamps } from "../../application/reconcileBookmarkTimestamps";
+import {
+  emitBookmarksUpdatedEvent,
+  emitSourceUpdatedEvent,
+  resolveNextBookmarkRevision,
+  resolveNextSourceRevision,
+  updateAssistantGenerating,
+  resolveAssistantGenerating
+} from "../../application/sourceUpdateSession";
 
 export interface BackgroundRuntimeDependencies {
   sourceStore: Pick<
     ConversationSourcePort & TimestampPort,
     "get" | "save" | "listByConversationId" | "apply"
   >;
-  bookmarkStore: Pick<UserDataBookmarkPort, "listByConversationId" | "updateEdited">;
+  bookmarkStore: Pick<UserDataBookmarkPort, "listByConversationId" | "updateEdited" | "updateTimestamp">;
   captureConversation: {
     execute(command: { source: ConversationSource; captureMode: "snapshot" | "delta" }): Promise<unknown>;
   };
@@ -89,6 +96,12 @@ type ChromeLike = {
   runtime?: {
     id?: string;
   };
+  tabs?: {
+    query?: (
+      queryInfo: { url?: string | string[] },
+      callback: (tabs: Array<{ id?: number }>) => void
+    ) => void;
+  };
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -104,6 +117,39 @@ function normalizeErrorMessage(error: unknown): string {
 function resolveRuntimeId(): string | null {
   const runtimeId = (globalThis as { chrome?: ChromeLike }).chrome?.runtime?.id;
   return typeof runtimeId === "string" && runtimeId.length > 0 ? runtimeId : null;
+}
+
+async function resolveBookmarkSignalTabIds(): Promise<number[]> {
+  const tabs = (globalThis as { chrome?: ChromeLike }).chrome?.tabs;
+  if (!tabs || typeof tabs.query !== "function") {
+    return [];
+  }
+
+  return new Promise((resolve) => {
+    try {
+      tabs.query?.(
+        {
+          url: ["https://chatgpt.com/*", "https://chat.openai.com/*"]
+        },
+        (matchedTabs) => {
+          const nextTabIds = new Set<number>();
+          for (const tab of matchedTabs) {
+            if (
+              tab &&
+              typeof tab.id === "number" &&
+              Number.isInteger(tab.id) &&
+              tab.id >= 0
+            ) {
+              nextTabIds.add(tab.id);
+            }
+          }
+          resolve([...nextTabIds]);
+        }
+      );
+    } catch {
+      resolve([]);
+    }
+  });
 }
 
 function resolveSenderTabId(sender: unknown): number | null {
@@ -162,9 +208,10 @@ export function createBackgroundRuntimeListener(
     const senderTabId = resolveSenderTabId(sender);
 
     if (isCaptureConversationRequest(message)) {
+      const domainSource = toDomainConversationSource(message.source);
       void dependencies.captureConversation
         .execute({
-          source: toDomainConversationSource(message.source),
+          source: domainSource,
           captureMode: message.captureMode
         })
         .then(() => {
@@ -172,9 +219,34 @@ export function createBackgroundRuntimeListener(
           if (isCaptureConversationSuccess(response)) {
             sendResponse(response);
           }
-          const conversationId = message.source.conversation.id;
-          const seq = resolveNextConversationSeq(conversationId);
-          emitSourceUpdatedEvent(conversationId, seq, senderTabId);
+
+          const conversationId = domainSource.conversation.id;
+          updateAssistantGenerating(conversationId, message.assistantGenerating);
+          const sourceRevision = resolveNextSourceRevision(conversationId);
+          emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId, message.assistantGenerating);
+
+          void (async () => {
+            const editedResult = await reconcileEditedBookmarks(
+              conversationId,
+              dependencies.sourceStore,
+              dependencies.bookmarkStore
+            );
+            const timestampResult = await reconcileBookmarkTimestamps(
+              conversationId,
+              dependencies.sourceStore,
+              dependencies.bookmarkStore
+            );
+
+            if (editedResult.updatedCount + timestampResult.updatedCount === 0) {
+              return;
+            }
+
+            const tabIds = await resolveBookmarkSignalTabIds();
+            const bookmarkRevision = resolveNextBookmarkRevision();
+            emitBookmarksUpdatedEvent(tabIds, bookmarkRevision);
+          })().catch((error: unknown) => {
+            console.error("capture-post-sync-failed", error);
+          });
         })
         .catch((error: unknown) => {
           const response = createCaptureConversationFailure(
@@ -189,49 +261,62 @@ export function createBackgroundRuntimeListener(
     }
 
     if (isApplyTimestampsRequest(message)) {
+      const conversationId = message.conversationId as MapHackConversationId;
       void dependencies.sourceStore
         .apply(
-          message.conversationId as MapHackConversationId,
+          conversationId,
           message.source,
           toDomainTimestampMappings(message.mappings)
         )
-        .then(async () => {
-          const messageRefs = await dependencies.sourceStore.listByConversationId(
-            message.conversationId as MapHackConversationId
-          );
-          const unresolvedCount = countUnresolvedMessageRefs(messageRefs);
-          const ready = unresolvedCount === 0;
-
-          if (ready) {
-            await reconcileEditedBookmarks(
-              message.conversationId,
-              dependencies.sourceStore,
-              dependencies.bookmarkStore
-            );
+        .then((applyResult) => {
+          if (applyResult.kind === "updated") {
+            const sourceRevision = resolveNextSourceRevision(conversationId);
+            emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId, resolveAssistantGenerating(conversationId));
           }
 
-          const seq = resolveNextConversationSeq(message.conversationId);
+          const response =
+            applyResult.kind === "source-missing"
+              ? createApplyTimestampsFailure(
+                  message.requestId,
+                  conversationId,
+                  "snapshot-required"
+                )
+              : createApplyTimestampsSuccess(message.requestId, conversationId);
 
-          if (ready) {
-            emitSourceUpdatedEvent(message.conversationId, seq, senderTabId);
-          }
+          const isExpectedResponse =
+            applyResult.kind === "source-missing"
+              ? isApplyTimestampsFailure(response)
+              : isApplyTimestampsSuccess(response);
 
-          const response = createApplyTimestampsSuccess(
-            message.requestId,
-            message.conversationId,
-            unresolvedCount,
-            ready,
-            seq
-          );
-          if (isApplyTimestampsSuccess(response)) {
+          if (isExpectedResponse) {
             sendResponse(response);
+          }
+
+          if (applyResult.kind === "updated") {
+            void (async () => {
+              const { updatedCount } = await reconcileBookmarkTimestamps(
+                conversationId,
+                dependencies.sourceStore,
+                dependencies.bookmarkStore
+              );
+              if (updatedCount === 0) {
+                return;
+              }
+
+              const tabIds = await resolveBookmarkSignalTabIds();
+              const bookmarkRevision = resolveNextBookmarkRevision();
+              emitBookmarksUpdatedEvent(tabIds, bookmarkRevision);
+            })().catch((error: unknown) => {
+              console.error("apply-post-sync-failed", error);
+            });
           }
         })
         .catch((error: unknown) => {
+          console.error("apply-timestamps-failed", normalizeErrorMessage(error));
           const response = createApplyTimestampsFailure(
             message.requestId,
-            message.conversationId,
-            normalizeErrorMessage(error)
+            conversationId,
+            "apply-failed"
           );
           if (isApplyTimestampsFailure(response)) {
             sendResponse(response);
@@ -248,6 +333,14 @@ export function createBackgroundRuntimeListener(
           if (isAddBookmarkSuccess(response)) {
             sendResponse(response);
           }
+
+          void (async () => {
+            const tabIds = await resolveBookmarkSignalTabIds();
+            const bookmarkRevision = resolveNextBookmarkRevision();
+            emitBookmarksUpdatedEvent(tabIds, bookmarkRevision);
+          })().catch((error: unknown) => {
+            console.error("bookmark-add-post-sync-failed", error);
+          });
         })
         .catch((error: unknown) => {
           const response = createAddBookmarkFailure(message.requestId, normalizeErrorMessage(error));
@@ -266,6 +359,14 @@ export function createBackgroundRuntimeListener(
           if (isRemoveBookmarkSuccess(response)) {
             sendResponse(response);
           }
+
+          void (async () => {
+            const tabIds = await resolveBookmarkSignalTabIds();
+            const bookmarkRevision = resolveNextBookmarkRevision();
+            emitBookmarksUpdatedEvent(tabIds, bookmarkRevision);
+          })().catch((error: unknown) => {
+            console.error("bookmark-remove-post-sync-failed", error);
+          });
         })
         .catch((error: unknown) => {
           const response = createRemoveBookmarkFailure(message.requestId, normalizeErrorMessage(error));

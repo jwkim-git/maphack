@@ -17,6 +17,7 @@ export const APPLY_TIMESTAMPS_REQUEST_TYPE = "mh-apply-timestamps-request";
 export const APPLY_TIMESTAMPS_SUCCESS_TYPE = "mh-apply-timestamps-success";
 export const APPLY_TIMESTAMPS_FAILURE_TYPE = "mh-apply-timestamps-failure";
 export const SOURCE_UPDATED_EVENT_TYPE = "mh-source-updated-event";
+export const BOOKMARKS_UPDATED_EVENT_TYPE = "mh-bookmarks-updated-event";
 export const RUNTIME_MESSAGE_SIGNATURE = "MAPHACK_RUNTIME_V1";
 export const RUNTIME_MESSAGE_SCHEMA = 1;
 
@@ -82,6 +83,7 @@ export interface CaptureConversationRequest {
   requestId: string;
   captureMode: RuntimeCaptureMode;
   source: RuntimeConversationSource;
+  assistantGenerating: boolean;
 }
 
 export interface CaptureConversationSuccess {
@@ -210,9 +212,6 @@ export interface ApplyTimestampsSuccess {
   schema: RuntimeMessageSchema;
   requestId: string;
   conversationId: string;
-  unresolvedCount: number;
-  ready: boolean;
-  seq: number;
 }
 
 export interface ApplyTimestampsFailure {
@@ -221,7 +220,7 @@ export interface ApplyTimestampsFailure {
   schema: RuntimeMessageSchema;
   requestId: string;
   conversationId: string;
-  error: string;
+  error: "snapshot-required" | "apply-failed";
 }
 
 export interface SourceUpdatedEvent {
@@ -229,7 +228,15 @@ export interface SourceUpdatedEvent {
   signature: RuntimeMessageSignature;
   schema: RuntimeMessageSchema;
   conversationId: string;
-  ready: true;
-  seq: number;
-  sessionId: string;
+  sourceRevision: number;
+  backgroundSessionId: string;
+  assistantGenerating: boolean;
+}
+
+export interface BookmarksUpdatedEvent {
+  type: typeof BOOKMARKS_UPDATED_EVENT_TYPE;
+  signature: RuntimeMessageSignature;
+  schema: RuntimeMessageSchema;
+  bookmarkRevision: number;
+  backgroundSessionId: string;
 }

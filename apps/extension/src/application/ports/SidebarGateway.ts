@@ -3,8 +3,14 @@ import type { Bookmark } from "../../../../../packages/core/src/domain/entities/
 
 export interface SourceUpdatedSignal {
   conversationId: string;
-  seq: number;
-  sessionId: string;
+  sourceRevision: number;
+  backgroundSessionId: string;
+  assistantGenerating: boolean;
+}
+
+export interface BookmarksUpdatedSignal {
+  bookmarkRevision: number;
+  backgroundSessionId: string;
 }
 
 export type GatewayResult<T> =
@@ -13,6 +19,7 @@ export type GatewayResult<T> =
 
 export interface SidebarGateway {
   subscribeSourceUpdated(listener: (signal: SourceUpdatedSignal) => void): () => void;
+  subscribeBookmarksUpdated(listener: (signal: BookmarksUpdatedSignal) => void): () => void;
   listBaseMessages(conversationId: string): Promise<GatewayResult<MessageRef[]>>;
   listBookmarks(): Promise<GatewayResult<Bookmark[]>>;
   addBookmark(messageRef: MessageRef): Promise<GatewayResult<Bookmark>>;

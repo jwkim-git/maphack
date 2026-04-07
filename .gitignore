@@ -14,8 +14,7 @@
 /node_modules/
 
 # Distribution Archives
-apps/extension/MH200/
-apps/extension/MH200.zip
+apps/extension/release/
 
 # Agent/System
 /.agents/

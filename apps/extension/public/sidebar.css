@@ -5,17 +5,22 @@
 :host {
   --mh-bg: #181818;
   --mh-bg-elevated: #181818;
-  --mh-border: #30363d;
-  --mh-primary: #137fec;
-  --mh-primary-30: rgba(19, 127, 236, 0.3);
-  --mh-primary-40: rgba(19, 127, 236, 0.4);
-  --mh-primary-10: rgba(19, 127, 236, 0.1);
-  --mh-primary-60: rgba(19, 127, 236, 0.6);
-  --mh-border-50: rgba(48, 54, 61, 0.5);
+  --mh-bg-selected: #2d2d32;
+  --mh-border: #32373c;
+  --mh-primary: #147dff;
+  --mh-primary-30: rgba(20, 125, 255, 0.3);
+  --mh-primary-40: rgba(20, 125, 255, 0.4);
+  --mh-primary-10: rgba(20, 125, 255, 0.1);
+  --mh-primary-60: rgba(20, 125, 255, 0.6);
+  --mh-border-50: rgba(50, 55, 60, 0.5);
   --mh-text: #e2e8f0;
   --mh-text-muted: #64748b;
   --mh-text-dim: #cbd5e1;
   --mh-white: #ffffff;
+  --mh-sync-ok: #22c55e;
+  --mh-sync-loading: #eab308;
+  --mh-sync-error: #ef4444;
+  --mh-scrollbar-thumb: rgba(48, 54, 61, 0.8);
 
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -130,7 +135,7 @@
 }
 
 .mh-scroll::-webkit-scrollbar-thumb {
-  background: rgba(48, 54, 61, 0.8);
+  background: var(--mh-scrollbar-thumb);
   border-radius: 8px;
 }
 
@@ -223,7 +228,7 @@
 /* ── Selected bubble ── */
 
 .mh-bubble-selected {
-  background: #242424;
+  background: var(--mh-bg-selected);
   border: 1px solid var(--mh-primary-30);
   transition: border-color 200ms;
 }
@@ -258,7 +263,7 @@
 }
 
 .mh-bubble-bookmark-selected {
-  background: #242424;
+  background: var(--mh-bg-selected);
   border: 1px solid var(--mh-primary-30);
   transition: border-color 200ms;
 }
@@ -339,7 +344,6 @@
 
 .mh-bubble-footer-highlighted {
   color: var(--mh-primary);
-  border-top: 1px solid var(--mh-primary-10);
 }
 
 .mh-timestamp {
@@ -433,15 +437,15 @@
 }
 
 .mh-sync-dot-ok {
-  background-color: #22c55e;
+  background-color: var(--mh-sync-ok);
 }
 
 .mh-sync-dot-loading {
-  background-color: #eab308;
+  background-color: var(--mh-sync-loading);
 }
 
 .mh-sync-dot-error {
-  background-color: #ef4444;
+  background-color: var(--mh-sync-error);
 }
 
 .mh-sync-text {
@@ -449,6 +453,12 @@
   color: var(--mh-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.mh-scroll-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .mh-scroll-top-btn {

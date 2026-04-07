@@ -5,6 +5,7 @@ import {
   APPLY_TIMESTAMPS_FAILURE_TYPE,
   APPLY_TIMESTAMPS_REQUEST_TYPE,
   APPLY_TIMESTAMPS_SUCCESS_TYPE,
+  BOOKMARKS_UPDATED_EVENT_TYPE,
   CAPTURE_CONVERSATION_FAILURE_TYPE,
   CAPTURE_CONVERSATION_REQUEST_TYPE,
   CAPTURE_CONVERSATION_SUCCESS_TYPE,
@@ -26,6 +27,7 @@ import {
   type ApplyTimestampsFailure,
   type ApplyTimestampsRequest,
   type ApplyTimestampsSuccess,
+  type BookmarksUpdatedEvent,
   type CaptureConversationFailure,
   type CaptureConversationRequest,
   type CaptureConversationSuccess,
@@ -50,7 +52,8 @@ import {
 export function createCaptureConversationRequest(
   requestId: string,
   source: RuntimeConversationSource,
-  captureMode: RuntimeCaptureMode
+  captureMode: RuntimeCaptureMode,
+  assistantGenerating: boolean
 ): CaptureConversationRequest {
   return {
     type: CAPTURE_CONVERSATION_REQUEST_TYPE,
@@ -58,7 +61,8 @@ export function createCaptureConversationRequest(
     schema: RUNTIME_MESSAGE_SCHEMA,
     requestId,
     captureMode,
-    source
+    source,
+    assistantGenerating
   };
 }
 
@@ -252,27 +256,21 @@ export function createApplyTimestampsRequest(
 
 export function createApplyTimestampsSuccess(
   requestId: string,
-  conversationId: string,
-  unresolvedCount: number,
-  ready: boolean,
-  seq: number
+  conversationId: string
 ): ApplyTimestampsSuccess {
   return {
     type: APPLY_TIMESTAMPS_SUCCESS_TYPE,
     signature: RUNTIME_MESSAGE_SIGNATURE,
     schema: RUNTIME_MESSAGE_SCHEMA,
     requestId,
-    conversationId,
-    unresolvedCount,
-    ready,
-    seq
+    conversationId
   };
 }
 
 export function createApplyTimestampsFailure(
   requestId: string,
   conversationId: string,
-  error: string
+  error: "snapshot-required" | "apply-failed"
 ): ApplyTimestampsFailure {
   return {
     type: APPLY_TIMESTAMPS_FAILURE_TYPE,
@@ -286,16 +284,30 @@ export function createApplyTimestampsFailure(
 
 export function createSourceUpdatedEvent(
   conversationId: string,
-  seq: number,
-  sessionId: string
+  sourceRevision: number,
+  backgroundSessionId: string,
+  assistantGenerating: boolean
 ): SourceUpdatedEvent {
   return {
     type: SOURCE_UPDATED_EVENT_TYPE,
     signature: RUNTIME_MESSAGE_SIGNATURE,
     schema: RUNTIME_MESSAGE_SCHEMA,
     conversationId,
-    ready: true,
-    seq,
-    sessionId
+    sourceRevision,
+    backgroundSessionId,
+    assistantGenerating
+  };
+}
+
+export function createBookmarksUpdatedEvent(
+  bookmarkRevision: number,
+  backgroundSessionId: string
+): BookmarksUpdatedEvent {
+  return {
+    type: BOOKMARKS_UPDATED_EVENT_TYPE,
+    signature: RUNTIME_MESSAGE_SIGNATURE,
+    schema: RUNTIME_MESSAGE_SCHEMA,
+    bookmarkRevision,
+    backgroundSessionId
   };
 }

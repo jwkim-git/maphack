@@ -109,6 +109,30 @@ export class IndexedDbBookmarkStore implements UserDataBookmarkPort {
     });
   }
 
+  async updateTimestamp(bookmarkId: MapHackBookmarkId, timestamp: number): Promise<void> {
+    await this.runReadWrite((store) => {
+      const readRequest = store.get(bookmarkId) as IDBRequest<StoredBookmarkRow | undefined>;
+
+      readRequest.onsuccess = () => {
+        const current = readRequest.result;
+        if (!current) {
+          return;
+        }
+
+        if (current.timestamp !== null) {
+          return;
+        }
+
+        store.put({
+          ...current,
+          timestamp
+        });
+      };
+
+      return readRequest;
+    });
+  }
+
   private async getDatabase(): Promise<IDBDatabase> {
     if (this.indexedDb === null) {
       throw new Error(INDEXED_DB_UNAVAILABLE_ERROR);

@@ -10,7 +10,8 @@ import {
   IconLogo,
   IconPerson,
   IconSmartToy,
-  IconScrollTop
+  IconScrollTop,
+  IconScrollBottom
 } from "./icons";
 
 export interface SidebarAppHandle {
@@ -97,7 +98,7 @@ function ChatBubble({
   const roleLabelClass = bookmarked ? "mh-role-label mh-role-label-highlighted" : "mh-role-label mh-role-label-default";
   const roleIconClass = bookmarked ? "mh-role-icon-highlighted" : "mh-role-icon-default";
   const bodyClass = isUser ? "mh-body-user" : "mh-body-assistant";
-  const footerClass = bookmarked ? "mh-bubble-footer mh-bubble-footer-highlighted" : "mh-bubble-footer mh-bubble-footer-default";
+  const footerClass = bookmarked ? "mh-bubble-footer mh-bubble-footer-default mh-bubble-footer-highlighted" : "mh-bubble-footer mh-bubble-footer-default";
 
   return (
     <div className={rowClass} data-message-ref-id={messageRef.id}>
@@ -185,6 +186,14 @@ function SidebarApp({
     ref.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [isBaseTab]);
 
+  const onScrollBottom = useCallback(() => {
+    const ref = isBaseTab ? chatScrollRef : bookmarkScrollRef;
+    const el = ref.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, [isBaseTab]);
+
   const prevConversationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -222,16 +231,22 @@ function SidebarApp({
   const syncStatus = isBaseTab
     ? !hasConversation
       ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "WAITING" }
-      : state.base.loading
-        ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-        : state.base.error !== null
-          ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" }
-          : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" }
-    : state.bookmarks.loading
-      ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-      : state.bookmarks.error !== null
+      : state.base.error !== null
         ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" }
-        : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" };
+        : state.assistantGenerating
+          ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
+          : state.base.loading
+            ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
+            : state.base.messages.some((m) => m.timestamp === null)
+              ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
+              : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" }
+    : state.bookmarks.error !== null
+      ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" }
+      : state.bookmarks.loading
+        ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
+        : state.bookmarks.items.some((b) => b.timestamp === null)
+          ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
+          : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" };
 
   return (
     <div className="mh-root">
@@ -335,15 +350,26 @@ function SidebarApp({
             <span className="mh-sync-text">{syncStatus.text}</span>
           </div>
         </div>
-        <button
-          type="button"
-          className="mh-scroll-top-btn"
-          onClick={onScrollTop}
-          aria-label="Scroll to top"
-          title="Scroll to top"
-        >
-          <IconScrollTop size={16} />
-        </button>
+        <div className="mh-scroll-btn-group">
+          <button
+            type="button"
+            className="mh-scroll-top-btn"
+            onClick={onScrollBottom}
+            aria-label="Scroll to bottom"
+            title="Scroll to bottom"
+          >
+            <IconScrollBottom size={16} />
+          </button>
+          <button
+            type="button"
+            className="mh-scroll-top-btn"
+            onClick={onScrollTop}
+            aria-label="Scroll to top"
+            title="Scroll to top"
+          >
+            <IconScrollTop size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );

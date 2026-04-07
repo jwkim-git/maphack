@@ -3,6 +3,7 @@ import type {
   ConversationSourcePort
 } from "../../../../../packages/core/src/application/ports/ConversationSourcePort";
 import type {
+  TimestampApplyResult,
   TimestampMapping,
   TimestampPort,
   TimestampSource
@@ -80,10 +81,10 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
     conversationId: MapHackConversationId,
     source: TimestampSource,
     mappings: TimestampMapping[]
-  ): Promise<void> {
+  ): Promise<TimestampApplyResult> {
     const stored = this.sourceByConversationId.get(conversationId);
     if (!stored) {
-      return;
+      return { kind: "source-missing" };
     }
 
     const effectiveMappings: TimestampMapping[] = [];
@@ -107,13 +108,13 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
     }
 
     if (effectiveMappings.length === 0) {
-      return;
+      return { kind: "unchanged" };
     }
 
     const nextSource = cloneSource(stored.source);
     const result = applyTimestampMappings(nextSource, effectiveMappings);
     if (result === null) {
-      return;
+      return { kind: "unchanged" };
     }
 
     const nextTimestampSourceByMessageId = new Map<MessageRef["id"], TimestampSource>(
@@ -127,5 +128,7 @@ export class MemoryConversationSourceCache implements ConversationSourcePort, Ti
       source: result.updated,
       timestampSourceByMessageId: nextTimestampSourceByMessageId
     });
+
+    return { kind: "updated" };
   }
 }

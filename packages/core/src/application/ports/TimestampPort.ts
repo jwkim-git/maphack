@@ -8,10 +8,15 @@ export interface TimestampMapping {
   timestamp: number | null;
 }
 
+export type TimestampApplyResult =
+  | { kind: "updated" }
+  | { kind: "unchanged" }
+  | { kind: "source-missing" };
+
 export interface TimestampPort {
   apply(
     conversationId: MapHackConversationId,
     source: TimestampSource,
     mappings: TimestampMapping[]
-  ): Promise<void>;
+  ): Promise<TimestampApplyResult>;
 }

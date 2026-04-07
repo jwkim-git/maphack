@@ -32,6 +32,7 @@ import {
   type SourceSyncState,
   type TrackedMessageId,
   syncConversationIdState,
+  resetConversationSyncState,
   isTrackedMessageId,
   createRuntimeRequestId
 } from "../../application/sourceSync/state";
@@ -52,7 +53,7 @@ import {
   toNextUnresolvedState,
   createTimestampRequestId,
   pruneExpiredTimestampRequests,
-  collectPendingMessageIds,
+  resolveTimestampRequestCandidates,
   markPayloadSuccessState,
   markPayloadFailureState
 } from "../../application/sourceSync/timestampCorrelation";
@@ -96,23 +97,31 @@ function resolveSourceData(
     return "transition-pending";
   }
 
-  return collectChatgptSourceData({
+  const collected = collectChatgptSourceData({
     root,
     conversation,
-    captureScope
-  }) ?? "source-unavailable";
+    captureScope,
+    previousLastAssistantContent: state.lastAssistantContentForStabilization
+  });
+  if (!collected) {
+    return "source-unavailable";
+  }
+  state.lastAssistantContentForStabilization = collected.latestAssistantContent;
+  return collected;
 }
 
 async function captureConversationSource(
   source: ConversationSource,
   captureMode: "snapshot" | "delta",
+  assistantGenerating: boolean,
   sendRuntimeMessage: RuntimeSendMessage
 ): Promise<"payload-invalid" | "capture-failed" | "snapshot-required" | "sent"> {
   const requestId = createRuntimeRequestId("capture");
   const request = createCaptureConversationRequest(
     requestId,
     toRuntimeConversationSource(source),
-    captureMode
+    captureMode,
+    assistantGenerating
   );
   if (!isCaptureConversationRequest(request)) {
     return "payload-invalid";
@@ -147,39 +156,9 @@ function requestTimestampsFromMain(
     syncConversationIdState(source.conversation.id, state);
   }
 
-  const liveIds = new Set<TrackedMessageId>(source.messageRefs.map((messageRef) => messageRef.id as TrackedMessageId));
-  for (const trackedId of state.requestStateByMessageId.keys()) {
-    if (!liveIds.has(trackedId)) {
-      state.requestStateByMessageId.delete(trackedId);
-    }
-  }
-
   const now = Date.now();
-  const pendingMessageIds = collectPendingMessageIds(state, now);
-  const dueUnresolvedIds = Array.from(state.requestStateByMessageId.entries())
-    .filter(
-      ([id, requestState]) =>
-        liveIds.has(id) &&
-        requestState.status === "unresolved" &&
-        requestState.retryAt <= now
-    )
-    .map(([id]) => id);
-
-  const messageIds: TrackedMessageId[] = [];
-  const appended = new Set<TrackedMessageId>();
-  for (const id of [...priorityMessageIds, ...dueUnresolvedIds]) {
-    if (!liveIds.has(id) || appended.has(id) || pendingMessageIds.has(id)) {
-      continue;
-    }
-
-    const current = state.requestStateByMessageId.get(id);
-    if (current && (current.status !== "unresolved" || current.retryAt > now)) {
-      continue;
-    }
-
-    messageIds.push(id);
-    appended.add(id);
-  }
+  const liveIds = new Set<TrackedMessageId>(source.messageRefs.map((messageRef) => messageRef.id as TrackedMessageId));
+  const messageIds = resolveTimestampRequestCandidates(liveIds, priorityMessageIds, state, now);
 
   if (messageIds.length === 0) {
     return;
@@ -268,18 +247,17 @@ export async function syncResolvedConversationSource(input: {
     captureResult = await captureConversationSource(
       captureSource,
       captureMode,
+      sourceOrResult.assistantGenerating,
       input.sendRuntimeMessage
     );
 
     if (captureResult === "snapshot-required") {
-      input.state.requestStateByMessageId.clear();
-      input.state.previousMessageIdByTurnIndex.clear();
-      input.state.hasInitialSnapshotCaptured = false;
-      input.state.pendingTimestampRequests.clear();
+      resetConversationSyncState(input.state);
 
       const replayResult = await captureConversationSource(
         sourceOrResult,
         "snapshot",
+        sourceOrResult.assistantGenerating,
         input.sendRuntimeMessage
       );
       if (replayResult !== "sent") {

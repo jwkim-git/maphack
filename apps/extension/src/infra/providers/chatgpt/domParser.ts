@@ -111,12 +111,15 @@ export interface CollectChatgptSourceDataInput {
   root: Document;
   conversation: CurrentChatgptConversation;
   captureScope: ChatgptCaptureScope;
+  previousLastAssistantContent: string | null;
 }
 
 export interface CollectedChatgptSourceData extends ConversationSource {
   collectionMeta: {
     scopeIds: readonly string[];
   };
+  assistantGenerating: boolean;
+  latestAssistantContent: string | null;
 }
 
 function normalizeText(value: string | null | undefined): string {
@@ -216,8 +219,7 @@ function detectMediaPreview(
     return strategy.labels.attachment;
   }
 
-  const alt = normalizeText(img.getAttribute("alt"));
-  return alt.length > 0 ? alt : strategy.labels.image;
+  return strategy.labels.image;
 }
 
 function hasActiveAssistantGenerationSignal(
@@ -242,6 +244,8 @@ export function collectChatgptSourceData(
     strategy.fields.assistantGeneration
   );
   const latestMessageIndex = messageElements.length - 1;
+  let assistantGenerating = false;
+  let latestAssistantContent: string | null = null;
 
   for (let index = 0; index < messageElements.length; index += 1) {
     const element = messageElements[index];
@@ -255,14 +259,34 @@ export function collectChatgptSourceData(
       continue;
     }
 
-    if (assistantGenerationActive && role === "assistant" && index === latestMessageIndex) {
-      continue;
+    const isAgentTurn = originalId.startsWith("file_");
+
+    let preview: string;
+    if (isAgentTurn) {
+      preview = strategy.fields.mediaFallback.labels.image;
+    } else {
+      const content = parseContent(element, role, strategy.fields.content);
+
+      if (role === "user" && content.length === 0 && element.querySelector("img[src]") === null) {
+        continue;
+      }
+
+      if (role === "assistant" && index === latestMessageIndex) {
+        latestAssistantContent = content;
+        const contentNotStabilized =
+          input.previousLastAssistantContent === null ||
+          content !== input.previousLastAssistantContent;
+        if (assistantGenerationActive || contentNotStabilized) {
+          assistantGenerating = true;
+          continue;
+        }
+      }
+
+      preview = content.length > 0
+        ? content.slice(0, strategy.derived.previewMaxLength)
+        : detectMediaPreview(element, strategy.fields.mediaFallback);
     }
 
-    const content = parseContent(element, role, strategy.fields.content);
-    const preview = content.length > 0
-      ? content.slice(0, strategy.derived.previewMaxLength)
-      : detectMediaPreview(element, strategy.fields.mediaFallback);
     const parsedTurnIndex = parseChatgptTurnIndexFromElement(element, index);
 
     messageRefs.push({
@@ -308,6 +332,8 @@ export function collectChatgptSourceData(
     messageRefs: deduplicatedMessageRefs,
     collectionMeta: {
       scopeIds: deduplicatedMessageRefs.map((messageRef) => messageRef.metadata.originalId)
-    }
+    },
+    assistantGenerating,
+    latestAssistantContent
   };
 }

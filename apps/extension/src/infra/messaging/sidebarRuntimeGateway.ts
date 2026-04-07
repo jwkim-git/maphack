@@ -1,6 +1,7 @@
 import type { Bookmark } from "../../../../../packages/core/src/domain/entities/Bookmark";
 import type { MessageRef } from "../../../../../packages/core/src/domain/entities/MessageRef";
 import type {
+  BookmarksUpdatedSignal,
   SidebarGateway,
   GatewayResult,
   SourceUpdatedSignal
@@ -12,6 +13,7 @@ import {
   createRemoveBookmarkRequest,
   isAddBookmarkFailure,
   isAddBookmarkSuccess,
+  isBookmarksUpdatedEvent,
   isListBaseMessagesFailure,
   isListBaseMessagesSuccess,
   isListBookmarksFailure,
@@ -151,8 +153,20 @@ export function createSidebarRuntimeGateway(
         if (isSourceUpdatedEvent(message)) {
           listener({
             conversationId: message.conversationId,
-            seq: message.seq,
-            sessionId: message.sessionId
+            sourceRevision: message.sourceRevision,
+            backgroundSessionId: message.backgroundSessionId,
+            assistantGenerating: message.assistantGenerating
+          });
+        }
+      });
+    },
+
+    subscribeBookmarksUpdated(listener: (signal: BookmarksUpdatedSignal) => void): () => void {
+      return runtimeApi.addMessageListener((message) => {
+        if (isBookmarksUpdatedEvent(message)) {
+          listener({
+            bookmarkRevision: message.bookmarkRevision,
+            backgroundSessionId: message.backgroundSessionId
           });
         }
       });

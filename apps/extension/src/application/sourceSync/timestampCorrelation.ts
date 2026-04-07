@@ -103,3 +103,44 @@ export function markPayloadFailureState(
     state.requestStateByMessageId.set(item.id, toNextUnresolvedState(now, previous));
   }
 }
+
+export function resolveTimestampRequestCandidates(
+  liveMessageIds: Set<TrackedMessageId>,
+  priorityMessageIds: readonly TrackedMessageId[],
+  state: SourceSyncState,
+  now: number
+): TrackedMessageId[] {
+  for (const trackedId of state.requestStateByMessageId.keys()) {
+    if (!liveMessageIds.has(trackedId)) {
+      state.requestStateByMessageId.delete(trackedId);
+    }
+  }
+
+  const pendingMessageIds = collectPendingMessageIds(state, now);
+  const dueUnresolvedIds = Array.from(state.requestStateByMessageId.entries())
+    .filter(
+      ([id, requestState]) =>
+        liveMessageIds.has(id) &&
+        requestState.status === "unresolved" &&
+        requestState.retryAt <= now
+    )
+    .map(([id]) => id);
+
+  const messageIds: TrackedMessageId[] = [];
+  const appended = new Set<TrackedMessageId>();
+  for (const id of [...priorityMessageIds, ...dueUnresolvedIds]) {
+    if (!liveMessageIds.has(id) || appended.has(id) || pendingMessageIds.has(id)) {
+      continue;
+    }
+
+    const current = state.requestStateByMessageId.get(id);
+    if (current && (current.status !== "unresolved" || current.retryAt > now)) {
+      continue;
+    }
+
+    messageIds.push(id);
+    appended.add(id);
+  }
+
+  return messageIds;
+}
