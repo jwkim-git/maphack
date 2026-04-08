@@ -97,17 +97,11 @@ function resolveSourceData(
     return "transition-pending";
   }
 
-  const collected = collectChatgptSourceData({
+  return collectChatgptSourceData({
     root,
     conversation,
-    captureScope,
-    previousLastAssistantContent: state.lastAssistantContentForStabilization
-  });
-  if (!collected) {
-    return "source-unavailable";
-  }
-  state.lastAssistantContentForStabilization = collected.latestAssistantContent;
-  return collected;
+    captureScope
+  }) ?? "source-unavailable";
 }
 
 async function captureConversationSource(

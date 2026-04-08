@@ -43,6 +43,23 @@ async function copyPublicAssets() {
   }
 }
 
+async function copyLocales() {
+  const localesRoot = path.join(extensionRoot, "_locales");
+  const distLocalesRoot = path.join(distRoot, "_locales");
+
+  try {
+    await cp(localesRoot, distLocalesRoot, { recursive: true });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? String(error.code)
+      : "";
+
+    if (code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 async function buildEntrypoints() {
   await Promise.all(
     buildTargets.map((target) =>
@@ -71,6 +88,7 @@ async function main() {
   await buildEntrypoints();
   await cp(path.join(extensionRoot, "manifest.json"), path.join(distRoot, "manifest.json"));
   await copyPublicAssets();
+  await copyLocales();
 
   console.log("build:extension completed");
 }

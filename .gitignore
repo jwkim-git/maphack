@@ -21,3 +21,4 @@ apps/extension/release/
 /.codex/
 .mcp.json
 .playwright-mcp/
+.claude/

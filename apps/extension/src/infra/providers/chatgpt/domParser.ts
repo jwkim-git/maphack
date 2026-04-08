@@ -111,7 +111,6 @@ export interface CollectChatgptSourceDataInput {
   root: Document;
   conversation: CurrentChatgptConversation;
   captureScope: ChatgptCaptureScope;
-  previousLastAssistantContent: string | null;
 }
 
 export interface CollectedChatgptSourceData extends ConversationSource {
@@ -119,7 +118,6 @@ export interface CollectedChatgptSourceData extends ConversationSource {
     scopeIds: readonly string[];
   };
   assistantGenerating: boolean;
-  latestAssistantContent: string | null;
 }
 
 function normalizeText(value: string | null | undefined): string {
@@ -245,7 +243,6 @@ export function collectChatgptSourceData(
   );
   const latestMessageIndex = messageElements.length - 1;
   let assistantGenerating = false;
-  let latestAssistantContent: string | null = null;
 
   for (let index = 0; index < messageElements.length; index += 1) {
     const element = messageElements[index];
@@ -271,15 +268,9 @@ export function collectChatgptSourceData(
         continue;
       }
 
-      if (role === "assistant" && index === latestMessageIndex) {
-        latestAssistantContent = content;
-        const contentNotStabilized =
-          input.previousLastAssistantContent === null ||
-          content !== input.previousLastAssistantContent;
-        if (assistantGenerationActive || contentNotStabilized) {
-          assistantGenerating = true;
-          continue;
-        }
+      if (role === "assistant" && index === latestMessageIndex && assistantGenerationActive) {
+        assistantGenerating = true;
+        continue;
       }
 
       preview = content.length > 0
@@ -333,7 +324,6 @@ export function collectChatgptSourceData(
     collectionMeta: {
       scopeIds: deduplicatedMessageRefs.map((messageRef) => messageRef.metadata.originalId)
     },
-    assistantGenerating,
-    latestAssistantContent
+    assistantGenerating
   };
 }
