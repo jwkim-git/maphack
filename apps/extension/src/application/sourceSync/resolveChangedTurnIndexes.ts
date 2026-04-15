@@ -38,9 +38,16 @@ export function resolveChangedTurnIndexes(
     return Array.from(nextMessageIdByTurnIndex.keys());
   }
 
+  const allTurnIndexes = new Set<number>([
+    ...state.previousMessageIdByTurnIndex.keys(),
+    ...nextMessageIdByTurnIndex.keys()
+  ]);
+
   const changedTurnIndexes: number[] = [];
-  for (const [turnIndex, messageId] of nextMessageIdByTurnIndex.entries()) {
-    if (state.previousMessageIdByTurnIndex.get(turnIndex) === messageId) {
+  for (const turnIndex of allTurnIndexes) {
+    const previous = state.previousMessageIdByTurnIndex.get(turnIndex);
+    const next = nextMessageIdByTurnIndex.get(turnIndex);
+    if (previous === next) {
       continue;
     }
     changedTurnIndexes.push(turnIndex);

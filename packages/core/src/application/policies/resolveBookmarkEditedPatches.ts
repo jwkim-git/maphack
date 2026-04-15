@@ -6,23 +6,15 @@ export function resolveBookmarkEditedPatches(
   messageRefs: MessageRef[],
   bookmarks: Bookmark[]
 ): Array<{ bookmarkId: MapHackBookmarkId; nextEdited: boolean }> {
-  const latestMessageIdByTurnIndex = new Map<number, string>();
+  const liveMessageIds = new Set<string>();
   for (const messageRef of messageRefs) {
-    if (messageRef.metadata.turnIndexSource === "fallback") {
-      continue;
-    }
-    latestMessageIdByTurnIndex.set(messageRef.metadata.turnIndex, messageRef.id);
+    liveMessageIds.add(messageRef.id);
   }
 
   const patches: Array<{ bookmarkId: MapHackBookmarkId; nextEdited: boolean }> = [];
 
   for (const bookmark of bookmarks) {
-    const latestMessageId = latestMessageIdByTurnIndex.get(bookmark.turnIndex);
-    if (latestMessageId === undefined) {
-      continue;
-    }
-
-    const nextEdited = latestMessageId !== bookmark.messageId;
+    const nextEdited = !liveMessageIds.has(bookmark.messageId);
     if (bookmark.edited === nextEdited) {
       continue;
     }

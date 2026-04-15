@@ -47,7 +47,6 @@ const LIST_BASE_RETRYABLE_ERRORS = new Set([
   "list-base-timeout",
   "list-base-no-response"
 ]);
-const STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS = [300, 500, 800, 1_200, 2_000, 3_000] as const;
 const SOURCE_UPDATE_RETRY_DELAY_MS = 500;
 const BOOKMARK_UPDATE_RETRY_DELAY_MS = 500;
 const SELECTED_BOOKMARK_STORAGE_KEY = "maphack:selected-bookmark-id";
@@ -197,12 +196,6 @@ export class SidebarViewModel {
     this.listeners.clear();
   }
 
-  async reloadBaseMessages(
-    conversationId: string | null = this.state.base.conversationId
-  ): Promise<void> {
-    await this.loadBaseMessages(conversationId);
-  }
-
   async reloadBookmarks(): Promise<void> {
     await this.loadBookmarks();
   }
@@ -314,6 +307,7 @@ export class SidebarViewModel {
       this.activeSourceUpdateBackgroundSessionId = signal.backgroundSessionId;
       this.lastAppliedSourceRevisionByConversationId.clear();
       this.pendingSourceRevisionByConversationId.clear();
+
     }
 
     if (this.state.assistantGenerating !== signal.assistantGenerating) {
@@ -345,6 +339,7 @@ export class SidebarViewModel {
     }
 
     this.pendingSourceRevisionByConversationId.set(signal.conversationId, signal.sourceRevision);
+
     this.ensureSourceUpdateDrain();
   }
 
@@ -357,6 +352,7 @@ export class SidebarViewModel {
       this.activeBookmarkUpdateBackgroundSessionId = signal.backgroundSessionId;
       this.lastAppliedBookmarkRevision = null;
       this.pendingBookmarkRevision = null;
+
     }
 
     if (
@@ -374,6 +370,7 @@ export class SidebarViewModel {
     }
 
     this.pendingBookmarkRevision = signal.bookmarkRevision;
+
     this.ensureBookmarkUpdateDrain();
   }
 
@@ -428,12 +425,6 @@ export class SidebarViewModel {
 
     this.syncBaseStateToActiveConversation(activeConversationId);
 
-    if (activeConversationId === null) {
-      return;
-    }
-
-    await this.loadBaseMessages(activeConversationId);
-    void this.recoverInitialBaseIfEmpty(activeConversationId);
   }
 
   private syncBaseStateToActiveConversation(activeConversationId: string | null): void {
@@ -534,12 +525,14 @@ export class SidebarViewModel {
   private consumePendingSourceUpdates(): Map<string, number> {
     const pending = new Map(this.pendingSourceRevisionByConversationId);
     this.pendingSourceRevisionByConversationId.clear();
+
     return pending;
   }
 
   private consumePendingBookmarkUpdate(): number | null {
     const pending = this.pendingBookmarkRevision;
     this.pendingBookmarkRevision = null;
+
     return pending;
   }
 
@@ -547,6 +540,7 @@ export class SidebarViewModel {
     const pendingSourceRevision = this.pendingSourceRevisionByConversationId.get(conversationId);
     if (pendingSourceRevision === undefined || sourceRevision > pendingSourceRevision) {
       this.pendingSourceRevisionByConversationId.set(conversationId, sourceRevision);
+
     }
   }
 
@@ -557,23 +551,30 @@ export class SidebarViewModel {
   }
 
   private markAppliedSourceUpdates(appliedUpdates: ReadonlyMap<string, number>): void {
+    let changed = false;
     for (const [conversationId, sourceRevision] of appliedUpdates.entries()) {
       const previous = this.lastAppliedSourceRevisionByConversationId.get(conversationId);
       if (previous === undefined || sourceRevision > previous) {
         this.lastAppliedSourceRevisionByConversationId.set(conversationId, sourceRevision);
+        changed = true;
       }
+    }
+    if (changed) {
+
     }
   }
 
   private requeueBookmarkUpdate(bookmarkRevision: number): void {
     if (this.pendingBookmarkRevision === null || bookmarkRevision > this.pendingBookmarkRevision) {
       this.pendingBookmarkRevision = bookmarkRevision;
+
     }
   }
 
   private markAppliedBookmarkUpdate(bookmarkRevision: number): void {
     if (this.lastAppliedBookmarkRevision === null || bookmarkRevision > this.lastAppliedBookmarkRevision) {
       this.lastAppliedBookmarkRevision = bookmarkRevision;
+
     }
   }
 
@@ -699,33 +700,6 @@ export class SidebarViewModel {
     }
 
     this.markAppliedBookmarkUpdate(pendingBookmarkRevision);
-  }
-
-  private async recoverInitialBaseIfEmpty(conversationId: string): Promise<void> {
-    for (const delayMs of STARTUP_BASE_RECOVERY_RETRY_DELAYS_MS) {
-      if (this.disposed || this.readActiveConversationId() !== conversationId) {
-        return;
-      }
-
-      if (this.state.base.messages.length > 0 || this.state.base.error !== null) {
-        return;
-      }
-
-      await this.wait(delayMs);
-
-      if (this.disposed || this.readActiveConversationId() !== conversationId) {
-        return;
-      }
-
-      const outcome = await this.loadBaseMessages(conversationId);
-      if (
-        outcome === "applied" &&
-        this.state.base.conversationId === conversationId &&
-        this.state.base.messages.length > 0
-      ) {
-        return;
-      }
-    }
   }
 
   private canApplyBaseReloadResult(conversationId: string): boolean {

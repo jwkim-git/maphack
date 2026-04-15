@@ -228,9 +228,16 @@ export async function syncResolvedConversationSource(input: {
     changedTurnIndexes
   );
 
-  const shouldCaptureSnapshot = !input.state.hasInitialSnapshotCaptured;
+  const hasRemovedTurnIndex = changedTurnIndexes.some(
+    (turnIndex) => !nextMessageIdByTurnIndex.has(turnIndex)
+  );
+
+  const shouldCaptureSnapshot =
+    !input.state.hasInitialSnapshotCaptured || hasRemovedTurnIndex;
   const shouldCaptureDelta =
-    input.state.hasInitialSnapshotCaptured && changedTurnIndexes.length > 0;
+    !shouldCaptureSnapshot &&
+    input.state.hasInitialSnapshotCaptured &&
+    changedTurnIndexes.length > 0;
   let captureResult: Awaited<ReturnType<typeof captureConversationSource>> | undefined;
 
   if (shouldCaptureSnapshot || shouldCaptureDelta) {

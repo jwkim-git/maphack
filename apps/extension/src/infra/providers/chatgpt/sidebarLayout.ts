@@ -10,12 +10,16 @@ const PERSISTENT_RIGHT_PANEL_SELECTOR =
 
 const TRIGGER_BAR_VARIANTS = [
   {
+    rootSelector: "div.fixed.end-4.top-1\\/2.-translate-y-1\\/2",
+    itemSelector: "button[aria-label]",
+    minItems: 3
+  },
+  {
     rootSelector: "div.fixed.end-4.top-1\\/2.z-10.-translate-y-1\\/2",
-    itemSelector:
-      ":scope > div.relative.flex.items-start > div.flex.w-9.flex-col.items-center.gap-2.py-1 > button.h-\\[2px\\].w-\\[18px\\].rounded-full.transition-all[aria-label]",
+    itemSelector: "button[aria-label]",
     minItems: 3
   }
-] as const;
+];
 
 interface ChatgptSidebarLayoutOptions {
   sidebarWidthPx: number;
