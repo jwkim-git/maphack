@@ -155,6 +155,12 @@ function clearPendingTarget(storageRef: Storage | null): void {
   } catch {}
 }
 
+function suppressScrollRestoration(target: Element): void {
+  target.dispatchEvent(
+    new WheelEvent("wheel", { deltaY: -1, bubbles: true })
+  );
+}
+
 const SCROLL_NAVIGATION_PADDING = 16;
 
 function resolveScrollContainerVisibleStartOffset(
@@ -185,9 +191,9 @@ function scrollTurnElementIntoView(
     visibleStartOffset;
 
   scrollContainer.scrollTo({
-    top: nextTop,
-    behavior: "smooth"
+    top: nextTop
   });
+  suppressScrollRestoration(scrollContainer);
 }
 
 function findChatgptTurnElementByTarget(
@@ -262,6 +268,7 @@ export function createChatgptTurnNavigator(
         const scrollContainer = resolveChatgptScrollContainer(documentRef, [turnElement], windowRef);
         if (!scrollContainer) {
           turnElement.scrollIntoView({ block: "start" });
+          suppressScrollRestoration(turnElement);
           clearPendingTarget(storageRef);
           return;
         }
@@ -278,6 +285,7 @@ export function createChatgptTurnNavigator(
             scrollContainer.scrollTop +
             (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) -
             visibleStartOffset;
+          suppressScrollRestoration(scrollContainer);
           clearPendingTarget(storageRef);
         };
 

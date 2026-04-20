@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MapHack",
-  "version": "2.0.2",
-  "description": "MapHack: message map, navigation, and bookmark for AI chat.",
+  "version": "2.0.3",
+  "description": "MapHack: The Pathfinder",
   "default_locale": "en",
   "icons": {
     "16": "public/icons/icon16.png",
