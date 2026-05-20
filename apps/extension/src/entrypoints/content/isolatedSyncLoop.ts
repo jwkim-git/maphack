@@ -1,4 +1,5 @@
 export interface IsolatedSyncLoopHandle {
+  requestSync: () => void;
   refreshRetry: () => void;
 }
 
@@ -8,6 +9,7 @@ export function bindIsolatedSyncLoop(input: {
   getNextRetryAt: () => number | null;
 }): IsolatedSyncLoopHandle {
   const noopHandle: IsolatedSyncLoopHandle = {
+    requestSync: () => {},
     refreshRetry: () => {}
   };
 
@@ -65,7 +67,18 @@ export function bindIsolatedSyncLoop(input: {
   new MutationObserver(requestSync).observe(observeTarget, {
     subtree: true,
     childList: true,
-    characterData: true
+    characterData: true,
+    attributes: true,
+    attributeFilter: [
+      "data-message-id",
+      "data-message-author-role",
+      "data-turn",
+      "data-testid",
+      "src",
+      "alt",
+      "class",
+      "style"
+    ]
   });
 
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -87,6 +100,7 @@ export function bindIsolatedSyncLoop(input: {
   armRetry();
 
   return {
+    requestSync,
     refreshRetry: armRetry
   };
 }

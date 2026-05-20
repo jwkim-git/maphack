@@ -21,9 +21,11 @@ import {
   TIMESTAMP_PULL_REQUEST_SIGNATURE,
   TIMESTAMP_PULL_REQUEST_TYPE
 } from "../../infra/messaging/timestampPayload";
+import type { ChatgptCaptureReadyGate } from "../../infra/providers/chatgpt/captureReadyGate";
 import {
-  collectChatgptSourceData
-} from "../../infra/providers/chatgpt/domParser";
+  collectChatgptSourceData,
+  type CollectedChatgptSourceData
+} from "../../infra/providers/chatgpt/sourceCollector";
 import { readCurrentChatgptConversation } from "../../infra/providers/chatgpt/currentConversation";
 import { resolveChatgptCaptureScope } from "../../infra/providers/chatgpt/threadScope";
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
@@ -37,8 +39,8 @@ import {
   createRuntimeRequestId
 } from "../../application/sourceSync/state";
 import {
-  resolveMessageIdByTurnIndex,
-  replacePreviousMessageIdByTurnIndex,
+  resolveMessageProjectionByTurnIndex,
+  replacePreviousMessageProjectionByTurnIndex,
   resolveChangedTurnIndexes,
   resolveDeltaMessageIdsByChangedTurns,
   selectSourceByMessageIds
@@ -68,18 +70,20 @@ export type CaptureResult =
   | "provider-unsupported"
   | "source-unavailable"
   | "transition-pending"
+  | "capture-ready-pending"
   | "payload-invalid"
   | "capture-failed"
   | "snapshot-required"
   | "sent";
 type ApplyResult = "accepted" | "ignored" | "failed";
-type ChatgptSourceData = NonNullable<ReturnType<typeof collectChatgptSourceData>>;
+type ChatgptSourceData = CollectedChatgptSourceData;
 
 function resolveSourceData(
   hostname: string,
   root: Document,
-  state: SourceSyncState
-): ChatgptSourceData | "provider-unsupported" | "source-unavailable" | "transition-pending" {
+  state: SourceSyncState,
+  captureReadyGate: ChatgptCaptureReadyGate
+): ChatgptSourceData | "provider-unsupported" | "source-unavailable" | "transition-pending" | "capture-ready-pending" {
   if (resolveProviderIdByHostname(hostname) !== "chatgpt") {
     return "provider-unsupported";
   }
@@ -96,26 +100,33 @@ function resolveSourceData(
     state.transitionRetryAt = Date.now() + TRANSITION_STABILIZATION_RETRY_MS;
     return "transition-pending";
   }
+  state.transitionRetryAt = null;
 
-  return collectChatgptSourceData({
-    root,
+  const collectionResult = collectChatgptSourceData({
     conversation,
-    captureScope
-  }) ?? "source-unavailable";
+    captureScope,
+    captureReadyGate
+  });
+
+  if (collectionResult === null) {
+    return "source-unavailable";
+  }
+  if (collectionResult.kind === "capture-ready-pending") {
+    return "capture-ready-pending";
+  }
+  return collectionResult.source;
 }
 
 async function captureConversationSource(
   source: ConversationSource,
   captureMode: "snapshot" | "delta",
-  assistantGenerating: boolean,
   sendRuntimeMessage: RuntimeSendMessage
 ): Promise<"payload-invalid" | "capture-failed" | "snapshot-required" | "sent"> {
   const requestId = createRuntimeRequestId("capture");
   const request = createCaptureConversationRequest(
     requestId,
     toRuntimeConversationSource(source),
-    captureMode,
-    assistantGenerating
+    captureMode
   );
   if (!isCaptureConversationRequest(request)) {
     return "payload-invalid";
@@ -190,16 +201,18 @@ export async function syncResolvedConversationSource(input: {
   postMainMessage: PostMainMessage;
   targetOrigin: string;
   state: SourceSyncState;
+  captureReadyGate: ChatgptCaptureReadyGate;
 }): Promise<CaptureResult> {
   pruneExpiredTimestampRequests(input.state, Date.now());
 
   const sourceOrResult = resolveSourceData(
     input.hostname,
     input.root,
-    input.state
+    input.state,
+    input.captureReadyGate
   );
-  if (sourceOrResult === "transition-pending") {
-    return "transition-pending";
+  if (sourceOrResult === "transition-pending" || sourceOrResult === "capture-ready-pending") {
+    return sourceOrResult;
   }
 
   if (typeof sourceOrResult === "string") {
@@ -221,15 +234,15 @@ export async function syncResolvedConversationSource(input: {
 
   input.state.transitionRetryAt = null;
 
-  const nextMessageIdByTurnIndex = resolveMessageIdByTurnIndex(sourceOrResult);
-  const changedTurnIndexes = resolveChangedTurnIndexes(input.state, nextMessageIdByTurnIndex);
+  const nextMessageProjectionByTurnIndex = resolveMessageProjectionByTurnIndex(sourceOrResult);
+  const changedTurnIndexes = resolveChangedTurnIndexes(input.state, nextMessageProjectionByTurnIndex);
   const deltaMessageIds = resolveDeltaMessageIdsByChangedTurns(
-    nextMessageIdByTurnIndex,
+    nextMessageProjectionByTurnIndex,
     changedTurnIndexes
   );
 
   const hasRemovedTurnIndex = changedTurnIndexes.some(
-    (turnIndex) => !nextMessageIdByTurnIndex.has(turnIndex)
+    (turnIndex) => !nextMessageProjectionByTurnIndex.has(turnIndex)
   );
 
   const shouldCaptureSnapshot =
@@ -248,7 +261,6 @@ export async function syncResolvedConversationSource(input: {
     captureResult = await captureConversationSource(
       captureSource,
       captureMode,
-      sourceOrResult.assistantGenerating,
       input.sendRuntimeMessage
     );
 
@@ -258,7 +270,6 @@ export async function syncResolvedConversationSource(input: {
       const replayResult = await captureConversationSource(
         sourceOrResult,
         "snapshot",
-        sourceOrResult.assistantGenerating,
         input.sendRuntimeMessage
       );
       if (replayResult !== "sent") {
@@ -272,7 +283,7 @@ export async function syncResolvedConversationSource(input: {
   input.state.hasInitialSnapshotCaptured = true;
   input.state.lastCommittedConversationId = sourceOrResult.conversation.id;
   input.state.lastCommittedScopeIds = new Set(sourceOrResult.collectionMeta.scopeIds);
-  replacePreviousMessageIdByTurnIndex(input.state, nextMessageIdByTurnIndex);
+  replacePreviousMessageProjectionByTurnIndex(input.state, nextMessageProjectionByTurnIndex);
   if (shouldCaptureSnapshot || captureResult === "snapshot-required") {
     requestTimestampsFromMain(
       sourceOrResult,

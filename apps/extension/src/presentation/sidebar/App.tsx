@@ -171,7 +171,6 @@ function SidebarApp({
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const bookmarkScrollRef = useRef<HTMLDivElement>(null);
   const isBaseTab = state.activeTab === "base";
-  const hasConversation = typeof state.base.conversationId === "string";
 
   const onClickBaseTab = useCallback(() => {
     viewModel.setActiveTab("base");
@@ -228,26 +227,6 @@ function SidebarApp({
     };
   }, [state.base.conversationId, state.base.initialLoadSettled, isBaseTab]);
 
-  const syncStatus = isBaseTab
-    ? !hasConversation
-      ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "WAITING" }
-      : state.base.error !== null
-        ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" }
-        : state.assistantGenerating
-          ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-          : state.base.loading
-            ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-            : state.base.messages.some((m) => m.timestamp === null)
-              ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-              : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" }
-    : state.bookmarks.error !== null
-      ? { dot: "mh-sync-dot mh-sync-dot-error", text: "FAILED" }
-      : state.bookmarks.loading
-        ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-        : state.bookmarks.items.some((b) => b.timestamp === null)
-          ? { dot: "mh-sync-dot mh-sync-dot-loading", text: "SYNCING" }
-          : { dot: "mh-sync-dot mh-sync-dot-ok", text: "SYNCED" };
-
   return (
     <div className="mh-root">
       <div className="mh-header">
@@ -292,8 +271,7 @@ function SidebarApp({
 
       <div className={isBaseTab ? "mh-scroll" : "mh-scroll mh-hidden"} ref={chatScrollRef}>
         <div className="mh-content-chat">
-          {hasConversation &&
-          !state.base.loading &&
+          {!state.base.loading &&
           state.base.error === null &&
           state.base.messages.length === 0 ? (
             <div className="mh-empty-message">No messages</div>
@@ -344,10 +322,6 @@ function SidebarApp({
               <IconBookmark size={12} />
               <span className="mh-count-number">{state.bookmarks.items.length}</span>
             </div>
-          </div>
-          <div className="mh-sync-group">
-            <span className={syncStatus.dot} />
-            <span className="mh-sync-text">{syncStatus.text}</span>
           </div>
         </div>
         <div className="mh-scroll-btn-group">

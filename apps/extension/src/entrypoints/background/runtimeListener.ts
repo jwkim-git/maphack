@@ -51,13 +51,12 @@ import {
 import { resolveProviderIdByHostname } from "../../infra/providers/index";
 import { reconcileEditedBookmarks } from "../../application/reconcileEditedBookmarks";
 import { reconcileBookmarkTimestamps } from "../../application/reconcileBookmarkTimestamps";
+import { reconcileBookmarkPreviews } from "../../application/reconcileBookmarkPreviews";
 import {
   emitBookmarksUpdatedEvent,
   emitSourceUpdatedEvent,
   resolveNextBookmarkRevision,
-  resolveNextSourceRevision,
-  updateAssistantGenerating,
-  resolveAssistantGenerating
+  resolveNextSourceRevision
 } from "../../application/sourceUpdateSession";
 
 export interface BackgroundRuntimeDependencies {
@@ -65,7 +64,10 @@ export interface BackgroundRuntimeDependencies {
     ConversationSourcePort & TimestampPort,
     "get" | "save" | "listByConversationId" | "apply"
   >;
-  bookmarkStore: Pick<UserDataBookmarkPort, "listByConversationId" | "updateEdited" | "updateTimestamp">;
+  bookmarkStore: Pick<
+    UserDataBookmarkPort,
+    "listByConversationId" | "updateEdited" | "updateMessagePreview" | "updateTimestamp"
+  >;
   captureConversation: {
     execute(command: { source: ConversationSource; captureMode: "snapshot" | "delta" }): Promise<unknown>;
   };
@@ -221,9 +223,8 @@ export function createBackgroundRuntimeListener(
           }
 
           const conversationId = domainSource.conversation.id;
-          updateAssistantGenerating(conversationId, message.assistantGenerating);
           const sourceRevision = resolveNextSourceRevision(conversationId);
-          emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId, message.assistantGenerating);
+          emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId);
 
           void (async () => {
             const editedResult = await reconcileEditedBookmarks(
@@ -236,8 +237,17 @@ export function createBackgroundRuntimeListener(
               dependencies.sourceStore,
               dependencies.bookmarkStore
             );
+            const previewResult = await reconcileBookmarkPreviews(
+              conversationId,
+              dependencies.sourceStore,
+              dependencies.bookmarkStore
+            );
 
-            if (editedResult.updatedCount + timestampResult.updatedCount === 0) {
+            const updatedBookmarkCount =
+              editedResult.updatedCount +
+              timestampResult.updatedCount +
+              previewResult.updatedCount;
+            if (updatedBookmarkCount === 0) {
               return;
             }
 
@@ -271,7 +281,7 @@ export function createBackgroundRuntimeListener(
         .then((applyResult) => {
           if (applyResult.kind === "updated") {
             const sourceRevision = resolveNextSourceRevision(conversationId);
-            emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId, resolveAssistantGenerating(conversationId));
+            emitSourceUpdatedEvent(conversationId, sourceRevision, senderTabId);
           }
 
           const response =

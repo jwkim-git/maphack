@@ -154,8 +154,7 @@ export function createSidebarRuntimeGateway(
           listener({
             conversationId: message.conversationId,
             sourceRevision: message.sourceRevision,
-            backgroundSessionId: message.backgroundSessionId,
-            assistantGenerating: message.assistantGenerating
+            backgroundSessionId: message.backgroundSessionId
           });
         }
       });

@@ -32,7 +32,6 @@ export interface SidebarViewState {
   bookmarks: SidebarBookmarksTabState;
   selectedBaseMessageId: string | null;
   selectedBookmarkId: string | null;
-  assistantGenerating: boolean;
 }
 
 type StateListener = (state: SidebarViewState) => void;
@@ -67,8 +66,7 @@ export class SidebarViewModel {
       error: null
     },
     selectedBaseMessageId: null,
-    selectedBookmarkId: null,
-    assistantGenerating: false
+    selectedBookmarkId: null
   };
 
   private readonly listeners = new Set<StateListener>();
@@ -129,8 +127,7 @@ export class SidebarViewModel {
         error: this.state.bookmarks.error
       },
       selectedBaseMessageId: this.state.selectedBaseMessageId,
-      selectedBookmarkId: this.state.selectedBookmarkId,
-      assistantGenerating: this.state.assistantGenerating
+      selectedBookmarkId: this.state.selectedBookmarkId
     };
   }
 
@@ -308,10 +305,6 @@ export class SidebarViewModel {
       this.lastAppliedSourceRevisionByConversationId.clear();
       this.pendingSourceRevisionByConversationId.clear();
 
-    }
-
-    if (this.state.assistantGenerating !== signal.assistantGenerating) {
-      this.patchState({ assistantGenerating: signal.assistantGenerating });
     }
 
     void this.turnNavigator.consumePendingNavigation(signal.conversationId).catch((error: unknown) => {

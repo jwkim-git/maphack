@@ -12,7 +12,6 @@ type ChromeLike = {
 };
 
 const sourceRevisionByConversationId = new Map<string, number>();
-const assistantGeneratingByConversationId = new Map<string, boolean>();
 let bookmarkRevision = 0;
 const backgroundSessionId = `bg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -27,26 +26,17 @@ export function resolveNextBookmarkRevision(): number {
   return bookmarkRevision;
 }
 
-export function updateAssistantGenerating(conversationId: string, value: boolean): void {
-  assistantGeneratingByConversationId.set(conversationId, value);
-}
-
-export function resolveAssistantGenerating(conversationId: string): boolean {
-  return assistantGeneratingByConversationId.get(conversationId) ?? false;
-}
-
 export function emitSourceUpdatedEvent(
   conversationId: string,
   sourceRevision: number,
-  senderTabId: number | null,
-  assistantGenerating: boolean
+  senderTabId: number | null
 ): void {
   if (senderTabId === null) {
     return;
   }
 
   const chromeLike = (globalThis as { chrome?: ChromeLike }).chrome;
-  const event = createSourceUpdatedEvent(conversationId, sourceRevision, backgroundSessionId, assistantGenerating);
+  const event = createSourceUpdatedEvent(conversationId, sourceRevision, backgroundSessionId);
   if (!isSourceUpdatedEvent(event)) {
     return;
   }

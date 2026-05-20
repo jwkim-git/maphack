@@ -1,53 +1,63 @@
-import type { TrackedMessageId, SourceSyncState } from "./state";
+import type {
+  TrackedMessageId,
+  TrackedMessageProjection,
+  SourceSyncState
+} from "./state";
 
 export interface SourceWithCollectionMeta {
   conversation: { id: string };
   messageRefs: ReadonlyArray<{
     id: string;
+    preview: string;
     metadata: { originalId: string; turnIndex: number; turnIndexSource: "primary" | "fallback" };
   }>;
   collectionMeta: { scopeIds: readonly string[] };
 }
 
-export function resolveMessageIdByTurnIndex(source: SourceWithCollectionMeta): Map<number, TrackedMessageId> {
-  const next = new Map<number, TrackedMessageId>();
+export function resolveMessageProjectionByTurnIndex(
+  source: SourceWithCollectionMeta
+): Map<number, TrackedMessageProjection> {
+  const next = new Map<number, TrackedMessageProjection>();
   for (const messageRef of source.messageRefs) {
     if (messageRef.metadata.turnIndexSource === "fallback") {
       continue;
     }
-    next.set(messageRef.metadata.turnIndex, messageRef.id);
+    next.set(messageRef.metadata.turnIndex, {
+      messageId: messageRef.id,
+      preview: messageRef.preview
+    });
   }
   return next;
 }
 
-export function replacePreviousMessageIdByTurnIndex(
+export function replacePreviousMessageProjectionByTurnIndex(
   state: SourceSyncState,
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>
+  nextMessageProjectionByTurnIndex: Map<number, TrackedMessageProjection>
 ): void {
-  state.previousMessageIdByTurnIndex.clear();
-  for (const [turnIndex, messageId] of nextMessageIdByTurnIndex.entries()) {
-    state.previousMessageIdByTurnIndex.set(turnIndex, messageId);
+  state.previousMessageProjectionByTurnIndex.clear();
+  for (const [turnIndex, projection] of nextMessageProjectionByTurnIndex.entries()) {
+    state.previousMessageProjectionByTurnIndex.set(turnIndex, projection);
   }
 }
 
 export function resolveChangedTurnIndexes(
   state: SourceSyncState,
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>
+  nextMessageProjectionByTurnIndex: Map<number, TrackedMessageProjection>
 ): number[] {
   if (!state.hasInitialSnapshotCaptured) {
-    return Array.from(nextMessageIdByTurnIndex.keys());
+    return Array.from(nextMessageProjectionByTurnIndex.keys());
   }
 
   const allTurnIndexes = new Set<number>([
-    ...state.previousMessageIdByTurnIndex.keys(),
-    ...nextMessageIdByTurnIndex.keys()
+    ...state.previousMessageProjectionByTurnIndex.keys(),
+    ...nextMessageProjectionByTurnIndex.keys()
   ]);
 
   const changedTurnIndexes: number[] = [];
   for (const turnIndex of allTurnIndexes) {
-    const previous = state.previousMessageIdByTurnIndex.get(turnIndex);
-    const next = nextMessageIdByTurnIndex.get(turnIndex);
-    if (previous === next) {
+    const previous = state.previousMessageProjectionByTurnIndex.get(turnIndex);
+    const next = nextMessageProjectionByTurnIndex.get(turnIndex);
+    if (sameProjection(previous, next)) {
       continue;
     }
     changedTurnIndexes.push(turnIndex);
@@ -56,18 +66,29 @@ export function resolveChangedTurnIndexes(
 }
 
 export function resolveDeltaMessageIdsByChangedTurns(
-  nextMessageIdByTurnIndex: Map<number, TrackedMessageId>,
+  nextMessageProjectionByTurnIndex: Map<number, TrackedMessageProjection>,
   changedTurnIndexes: readonly number[]
 ): TrackedMessageId[] {
   const deltaMessageIds: TrackedMessageId[] = [];
   for (const turnIndex of changedTurnIndexes) {
-    const messageId = nextMessageIdByTurnIndex.get(turnIndex);
-    if (!messageId) {
+    const projection = nextMessageProjectionByTurnIndex.get(turnIndex);
+    if (!projection) {
       continue;
     }
-    deltaMessageIds.push(messageId);
+    deltaMessageIds.push(projection.messageId);
   }
   return deltaMessageIds;
+}
+
+function sameProjection(
+  left: TrackedMessageProjection | undefined,
+  right: TrackedMessageProjection | undefined
+): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+
+  return left.messageId === right.messageId && left.preview === right.preview;
 }
 
 export function selectSourceByMessageIds<T extends SourceWithCollectionMeta>(

@@ -2,6 +2,11 @@ import type {
   TurnNavigationTarget,
   TurnNavigator
 } from "../../../application/ports/TurnNavigator";
+import {
+  startScrollPositionSettler,
+  type ScrollPositionSettlerTransaction,
+  type StartScrollPositionSettler
+} from "../../browser/scrollPositionSettler";
 import { CHATGPT_SCROLL_CONTAINER_PRIMARY } from "./selectors";
 import {
   findChatgptTurnElementByMessageId,
@@ -27,6 +32,7 @@ type ChatgptTurnNavigatorOptions = {
   documentRef: Document;
   windowRef: Window;
   storageRef?: Storage | null;
+  scrollPositionSettler?: StartScrollPositionSettler;
 };
 
 type PersistedTurnNavigationTarget = {
@@ -155,47 +161,6 @@ function clearPendingTarget(storageRef: Storage | null): void {
   } catch {}
 }
 
-function suppressScrollRestoration(target: Element): void {
-  target.dispatchEvent(
-    new WheelEvent("wheel", { deltaY: -1, bubbles: true })
-  );
-}
-
-const SCROLL_NAVIGATION_PADDING = 16;
-
-function resolveScrollContainerVisibleStartOffset(
-  scrollContainer: Element,
-  windowRef: Window
-): number {
-  const rawValue = windowRef.getComputedStyle(scrollContainer).scrollPaddingTop;
-  const parsedValue = Number.parseFloat(rawValue);
-  const base = Number.isFinite(parsedValue) ? parsedValue : 0;
-  return base + SCROLL_NAVIGATION_PADDING;
-}
-
-function scrollTurnElementIntoView(
-  root: Document,
-  turnElement: Element,
-  windowRef: Window
-): void {
-  const scrollContainer = resolveChatgptScrollContainer(root, [turnElement], windowRef);
-  if (!scrollContainer) {
-    turnElement.scrollIntoView({ behavior: "smooth", block: "start" });
-    return;
-  }
-
-  const visibleStartOffset = resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef);
-  const nextTop =
-    scrollContainer.scrollTop +
-    (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) -
-    visibleStartOffset;
-
-  scrollContainer.scrollTo({
-    top: nextTop
-  });
-  suppressScrollRestoration(scrollContainer);
-}
-
 function findChatgptTurnElementByTarget(
   root: Document,
   target: PersistedTurnNavigationTarget | TurnNavigationTarget
@@ -211,94 +176,138 @@ export function createChatgptTurnNavigator(
 ): TurnNavigator {
   const { documentRef, windowRef } = options;
   const storageRef = resolveSessionStorage(windowRef, options.storageRef);
+  const scrollPositionSettler = options.scrollPositionSettler ?? startScrollPositionSettler;
   let pendingObserver: MutationObserver | null = null;
-  let pendingScrollCleanup: (() => void) | null = null;
+  let activeScrollTransaction: ScrollPositionSettlerTransaction | null = null;
 
-  function disposePending(): void {
-    if (pendingScrollCleanup) {
-      pendingScrollCleanup();
-      pendingScrollCleanup = null;
-    }
+  function disposePendingObserver(): void {
     if (pendingObserver) {
       pendingObserver.disconnect();
       pendingObserver = null;
     }
   }
 
+  function disposeActiveScrollTransaction(): void {
+    activeScrollTransaction?.dispose();
+    activeScrollTransaction = null;
+  }
+
+  function completeActiveScrollTransaction(
+    transaction: ScrollPositionSettlerTransaction | null,
+    callback: () => void
+  ): void {
+    if (!transaction || activeScrollTransaction !== transaction) {
+      return;
+    }
+
+    activeScrollTransaction = null;
+    callback();
+  }
+
+  function startTurnNavigationSettlement(
+    turnElement: Element,
+    callbacks: {
+      onSettled: () => void;
+      onUnavailable: () => void;
+      onAborted: () => void;
+    }
+  ): boolean {
+    const scrollContainer = resolveChatgptScrollContainer(documentRef, [turnElement], windowRef);
+    if (!scrollContainer) {
+      return false;
+    }
+
+    disposeActiveScrollTransaction();
+    let transaction: ScrollPositionSettlerTransaction | null = null;
+    transaction = scrollPositionSettler({
+      targetElement: turnElement,
+      scrollContainer,
+      windowRef,
+      onSettled: () => completeActiveScrollTransaction(transaction, callbacks.onSettled),
+      onUnavailable: () => completeActiveScrollTransaction(transaction, callbacks.onUnavailable),
+      onAborted: () => completeActiveScrollTransaction(transaction, callbacks.onAborted)
+    });
+    activeScrollTransaction = transaction;
+    return true;
+  }
+
+  function resolveMutationObserver(): typeof MutationObserver | null {
+    const fromWindow = (windowRef as Window & { MutationObserver?: typeof MutationObserver }).MutationObserver;
+    if (fromWindow) {
+      return fromWindow;
+    }
+
+    return typeof MutationObserver === "undefined" ? null : MutationObserver;
+  }
+
+  function armPendingNavigationObserver(pendingTarget: PersistedTurnNavigationTarget): void {
+    disposePendingObserver();
+
+    const observeTarget = documentRef.body ?? documentRef.documentElement;
+    const MutationObserverCtor = resolveMutationObserver();
+    if (!observeTarget || !MutationObserverCtor) {
+      return;
+    }
+
+    pendingObserver = new MutationObserverCtor(() => {
+      void tryStartPendingNavigation(pendingTarget);
+    });
+    pendingObserver.observe(observeTarget, {
+      subtree: true,
+      childList: true
+    });
+  }
+
+  function tryStartPendingNavigation(pendingTarget: PersistedTurnNavigationTarget): boolean {
+    const turnElement = findChatgptTurnElementByTarget(documentRef, pendingTarget);
+    if (!turnElement) {
+      return false;
+    }
+
+    disposePendingObserver();
+    return startTurnNavigationSettlement(turnElement, {
+      onSettled: () => clearPendingTarget(storageRef),
+      onUnavailable: () => armPendingNavigationObserver(pendingTarget),
+      onAborted: () => clearPendingTarget(storageRef)
+    });
+  }
+
   return {
     async navigateWithinConversation(target: TurnNavigationTarget): Promise<void> {
+      disposePendingObserver();
+      disposeActiveScrollTransaction();
+      clearPendingTarget(storageRef);
+
       const turnElement = findChatgptTurnElementByTarget(documentRef, target);
       if (!turnElement) {
         return;
       }
 
-      scrollTurnElementIntoView(documentRef, turnElement, windowRef);
+      startTurnNavigationSettlement(turnElement, {
+        onSettled: () => {},
+        onUnavailable: () => {},
+        onAborted: () => {}
+      });
     },
 
     async navigateAcrossConversations(target: TurnNavigationTarget): Promise<void> {
-      disposePending();
+      disposePendingObserver();
+      disposeActiveScrollTransaction();
       writePendingTarget(storageRef, target);
       windowRef.location.assign(target.conversationUrl);
     },
 
     async consumePendingNavigation(readyConversationId: string): Promise<void> {
-      disposePending();
+      disposePendingObserver();
 
       const pendingTarget = readPendingTarget(storageRef);
       if (!pendingTarget || pendingTarget.conversationId !== readyConversationId) {
         return;
       }
 
-      const observeTarget = documentRef.body ?? documentRef.documentElement;
-      if (!observeTarget) {
-        return;
+      if (!tryStartPendingNavigation(pendingTarget)) {
+        armPendingNavigationObserver(pendingTarget);
       }
-
-      pendingObserver = new MutationObserver(() => {
-        const turnElement = findChatgptTurnElementByTarget(documentRef, pendingTarget);
-        if (!turnElement) {
-          return;
-        }
-
-        if (pendingObserver) {
-          pendingObserver.disconnect();
-          pendingObserver = null;
-        }
-
-        const scrollContainer = resolveChatgptScrollContainer(documentRef, [turnElement], windowRef);
-        if (!scrollContainer) {
-          turnElement.scrollIntoView({ block: "start" });
-          suppressScrollRestoration(turnElement);
-          clearPendingTarget(storageRef);
-          return;
-        }
-
-        if (scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
-          clearPendingTarget(storageRef);
-          return;
-        }
-
-        const onScroll = (): void => {
-          pendingScrollCleanup = null;
-          const visibleStartOffset = resolveScrollContainerVisibleStartOffset(scrollContainer, windowRef);
-          scrollContainer.scrollTop =
-            scrollContainer.scrollTop +
-            (turnElement.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top) -
-            visibleStartOffset;
-          suppressScrollRestoration(scrollContainer);
-          clearPendingTarget(storageRef);
-        };
-
-        scrollContainer.addEventListener("scroll", onScroll, { once: true });
-        pendingScrollCleanup = () => {
-          scrollContainer.removeEventListener("scroll", onScroll);
-        };
-      });
-
-      pendingObserver.observe(observeTarget, {
-        subtree: true,
-        childList: true
-      });
     }
   };
 }

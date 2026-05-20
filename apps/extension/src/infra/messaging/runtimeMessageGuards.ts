@@ -61,8 +61,7 @@ export function isCaptureConversationRequest(value: unknown): value is CaptureCo
     value.type === CAPTURE_CONVERSATION_REQUEST_TYPE &&
     typeof value.requestId === "string" &&
     (value.captureMode === "snapshot" || value.captureMode === "delta") &&
-    isRuntimeConversationSource(value.source) &&
-    typeof value.assistantGenerating === "boolean"
+    isRuntimeConversationSource(value.source)
   );
 }
 
@@ -313,8 +312,7 @@ export function isSourceUpdatedEvent(value: unknown): value is SourceUpdatedEven
     Number.isInteger(value.sourceRevision) &&
     value.sourceRevision >= 0 &&
     typeof value.backgroundSessionId === "string" &&
-    value.backgroundSessionId.length > 0 &&
-    typeof value.assistantGenerating === "boolean"
+    value.backgroundSessionId.length > 0
   );
 }
 

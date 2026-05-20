@@ -1,13 +1,9 @@
-import type { ConversationSource } from "../../../../../../packages/core/src/application/ports/ConversationSourcePort";
-import { toMapHackMessageId } from "../../../../../../packages/core/src/domain/value/MapHackMessageId";
-import type { CurrentChatgptConversation } from "./currentConversation";
 import { CHATGPT_AGENT_TURN_SELECTOR } from "./selectors";
-import type { ChatgptCaptureScope } from "./threadScope";
 import { parseChatgptTurnIndexFromElement } from "./turnIndex";
 
 export const CHATGPT_MESSAGE_REF_TIMESTAMP_DEFAULT = null;
 
-type ChatgptMessageRole = ConversationSource["messageRefs"][number]["role"];
+export type ChatgptMessageRole = "user" | "assistant";
 
 type ChatgptSourceDataCollectionStrategyContract = {
   fields: {
@@ -15,6 +11,7 @@ type ChatgptSourceDataCollectionStrategyContract = {
       primaryAttribute: "data-message-id";
       descendantSelector: "[data-message-id]";
       descendantAttribute: "data-message-id";
+      temporaryPrefixes: readonly string[];
     };
     turnIndex: {
       fallbackPolicy: "node-list-index";
@@ -34,14 +31,11 @@ type ChatgptSourceDataCollectionStrategyContract = {
         fallbacks: readonly string[];
       };
     };
-    assistantGeneration: {
-      stopButtonSelector: 'button[data-testid="stop-button"]';
-    };
     mediaFallback: {
       imageSelector: "img[src]";
       labels: {
         image: "[Image]";
-        attachment: "[Attachment]";
+        etc: "[Etc]";
       };
     };
     agentTurn: {
@@ -63,7 +57,8 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
     messageId: {
       primaryAttribute: "data-message-id",
       descendantSelector: "[data-message-id]",
-      descendantAttribute: "data-message-id"
+      descendantAttribute: "data-message-id",
+      temporaryPrefixes: ["request-placeholder-"]
     },
     turnIndex: {
       fallbackPolicy: "node-list-index"
@@ -83,14 +78,11 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
         fallbacks: [".markdown", '[data-turn="assistant"]']
       }
     },
-    assistantGeneration: {
-      stopButtonSelector: 'button[data-testid="stop-button"]'
-    },
     mediaFallback: {
       imageSelector: "img[src]",
       labels: {
         image: "[Image]",
-        attachment: "[Attachment]"
+        etc: "[Etc]"
       }
     },
     agentTurn: {
@@ -107,18 +99,15 @@ export const CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY = {
   }
 } as const satisfies ChatgptSourceDataCollectionStrategyContract;
 
-export interface CollectChatgptSourceDataInput {
-  root: Document;
-  conversation: CurrentChatgptConversation;
-  captureScope: ChatgptCaptureScope;
-}
-
-export interface CollectedChatgptSourceData extends ConversationSource {
-  collectionMeta: {
-    scopeIds: readonly string[];
-  };
-  assistantGenerating: boolean;
-}
+export type ParsedChatgptMessageRow = {
+  element: Element;
+  originalId: string;
+  role: ChatgptMessageRole;
+  turnIndex: number;
+  turnIndexSource: "primary" | "fallback";
+  rowText: string;
+  contentHeight: number;
+};
 
 function normalizeText(value: string | null | undefined): string {
   if (!value) {
@@ -150,9 +139,9 @@ function parseAgentTurnFileId(
   element: Element,
   strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["agentTurn"]
 ): string | null {
-  const isAgentTurn =
+  const matchesAgentTurnSelector =
     element.matches(strategy.selector) || element.querySelector(strategy.selector) !== null;
-  if (!isAgentTurn) {
+  if (!matchesAgentTurnSelector) {
     return null;
   }
 
@@ -208,122 +197,31 @@ function parseContent(
   return normalizeText(element.textContent);
 }
 
-function detectMediaPreview(
+export function parseChatgptMessageRow(
   element: Element,
-  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["mediaFallback"]
-): string {
-  const img = element.querySelector(strategy.imageSelector);
-  if (!img) {
-    return strategy.labels.attachment;
-  }
-
-  return strategy.labels.image;
-}
-
-function hasActiveAssistantGenerationSignal(
-  root: Document,
-  strategy: ChatgptSourceDataCollectionStrategyContract["fields"]["assistantGeneration"]
-): boolean {
-  return root.querySelector(strategy.stopButtonSelector) !== null;
-}
-
-export function collectChatgptSourceData(
-  input: CollectChatgptSourceDataInput
-): CollectedChatgptSourceData | null {
+  fallbackIndex: number
+): ParsedChatgptMessageRow | null {
   const strategy: ChatgptSourceDataCollectionStrategyContract = CHATGPT_SOURCE_DATA_COLLECTION_STRATEGY;
-  const messageElements = input.captureScope.messageContainers;
-  const conversationOriginalId = input.conversation.originalId;
-  const conversationId = input.conversation.id;
-  const resolvedConversationUrl = input.conversation.url;
-
-  const messageRefs: ConversationSource["messageRefs"] = [];
-  const assistantGenerationActive = hasActiveAssistantGenerationSignal(
-    input.root,
-    strategy.fields.assistantGeneration
-  );
-  const latestMessageIndex = messageElements.length - 1;
-  let assistantGenerating = false;
-
-  for (let index = 0; index < messageElements.length; index += 1) {
-    const element = messageElements[index];
-    const originalId = parseMessageOriginalId(element, strategy.fields.messageId, strategy.fields.agentTurn);
-    if (!originalId) {
-      continue;
-    }
-
-    const role = parseRoleFromElement(element, strategy.fields.role);
-    if (!role) {
-      continue;
-    }
-
-    const isAgentTurn = originalId.startsWith("file_");
-
-    let preview: string;
-    if (isAgentTurn) {
-      preview = strategy.fields.mediaFallback.labels.image;
-    } else {
-      const content = parseContent(element, role, strategy.fields.content);
-
-      if (role === "user" && content.length === 0 && element.querySelector("img[src]") === null) {
-        continue;
-      }
-
-      if (role === "assistant" && index === latestMessageIndex && assistantGenerationActive) {
-        assistantGenerating = true;
-        continue;
-      }
-
-      preview = content.length > 0
-        ? content.slice(0, strategy.derived.previewMaxLength)
-        : detectMediaPreview(element, strategy.fields.mediaFallback);
-    }
-
-    const parsedTurnIndex = parseChatgptTurnIndexFromElement(element, index);
-
-    messageRefs.push({
-      id: toMapHackMessageId(originalId),
-      conversationId,
-      role,
-      preview,
-      timestamp: strategy.defaults.messageRefTimestamp,
-      platform: "chatgpt",
-      conversationUrl: resolvedConversationUrl,
-      metadata: {
-        originalId,
-        turnIndex: parsedTurnIndex.value,
-        turnIndexSource: parsedTurnIndex.source
-      }
-    });
+  const originalId = parseMessageOriginalId(element, strategy.fields.messageId, strategy.fields.agentTurn);
+  if (!originalId) {
+    return null;
   }
 
-  const deduplicatedMessageRefs: ConversationSource["messageRefs"] = [];
-  const seenOriginalIds = new Set<string>();
-  for (let index = messageRefs.length - 1; index >= 0; index -= 1) {
-    const messageRef = messageRefs[index];
-    const originalId = messageRef.metadata.originalId;
-    if (seenOriginalIds.has(originalId)) {
-      continue;
-    }
-    seenOriginalIds.add(originalId);
-    deduplicatedMessageRefs.push(messageRef);
+  const role = parseRoleFromElement(element, strategy.fields.role);
+  if (!role) {
+    return null;
   }
-  deduplicatedMessageRefs.reverse();
+
+  const suppressTextContent = originalId.startsWith("file_");
+  const parsedTurnIndex = parseChatgptTurnIndexFromElement(element, fallbackIndex);
 
   return {
-    conversation: {
-      id: conversationId,
-      createdAt: null,
-      updatedAt: null,
-      platform: "chatgpt",
-      metadata: {
-        originalId: conversationOriginalId,
-        url: resolvedConversationUrl
-      }
-    },
-    messageRefs: deduplicatedMessageRefs,
-    collectionMeta: {
-      scopeIds: deduplicatedMessageRefs.map((messageRef) => messageRef.metadata.originalId)
-    },
-    assistantGenerating
+    element,
+    originalId,
+    role,
+    turnIndex: parsedTurnIndex.value,
+    turnIndexSource: parsedTurnIndex.source,
+    rowText: suppressTextContent ? "" : parseContent(element, role, strategy.fields.content),
+    contentHeight: element.getBoundingClientRect().height
   };
 }

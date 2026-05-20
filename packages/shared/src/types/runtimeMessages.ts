@@ -83,7 +83,6 @@ export interface CaptureConversationRequest {
   requestId: string;
   captureMode: RuntimeCaptureMode;
   source: RuntimeConversationSource;
-  assistantGenerating: boolean;
 }
 
 export interface CaptureConversationSuccess {
@@ -230,7 +229,6 @@ export interface SourceUpdatedEvent {
   conversationId: string;
   sourceRevision: number;
   backgroundSessionId: string;
-  assistantGenerating: boolean;
 }
 
 export interface BookmarksUpdatedEvent {

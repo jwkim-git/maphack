@@ -1,6 +1,10 @@
 import { isMapHackMessageId } from "../../../../../packages/core/src/domain/value/MapHackMessageId";
 
 export type TrackedMessageId = string;
+export type TrackedMessageProjection = {
+  messageId: TrackedMessageId;
+  preview: string;
+};
 type RequestState = { status: "unresolved" | "resolved"; retryAt: number; retryAttempt: number };
 type PendingTimestampRequest = {
   conversationId: string;
@@ -11,7 +15,7 @@ type PendingTimestampRequest = {
 export type SourceSyncState = {
   activeConversationId: string | null;
   requestStateByMessageId: Map<TrackedMessageId, RequestState>;
-  previousMessageIdByTurnIndex: Map<number, TrackedMessageId>;
+  previousMessageProjectionByTurnIndex: Map<number, TrackedMessageProjection>;
   hasInitialSnapshotCaptured: boolean;
   lastCommittedConversationId: string | null;
   lastCommittedScopeIds: Set<string>;
@@ -25,7 +29,7 @@ export function bootstrapSourceSyncState(): SourceSyncState {
   return {
     activeConversationId: null,
     requestStateByMessageId: new Map<TrackedMessageId, RequestState>(),
-    previousMessageIdByTurnIndex: new Map<number, TrackedMessageId>(),
+    previousMessageProjectionByTurnIndex: new Map<number, TrackedMessageProjection>(),
     hasInitialSnapshotCaptured: false,
     lastCommittedConversationId: null,
     lastCommittedScopeIds: new Set<string>(),
@@ -36,7 +40,7 @@ export function bootstrapSourceSyncState(): SourceSyncState {
 
 export function resetConversationSyncState(state: SourceSyncState): void {
   state.requestStateByMessageId.clear();
-  state.previousMessageIdByTurnIndex.clear();
+  state.previousMessageProjectionByTurnIndex.clear();
   state.hasInitialSnapshotCaptured = false;
   state.transitionRetryAt = null;
   state.pendingTimestampRequests.clear();

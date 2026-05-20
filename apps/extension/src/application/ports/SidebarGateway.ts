@@ -5,7 +5,6 @@ export interface SourceUpdatedSignal {
   conversationId: string;
   sourceRevision: number;
   backgroundSessionId: string;
-  assistantGenerating: boolean;
 }
 
 export interface BookmarksUpdatedSignal {

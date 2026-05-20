@@ -6,6 +6,7 @@ import {
   type CaptureResult,
   type RuntimeSendMessage
 } from "./isolatedSyncRuntime";
+import { ChatgptCaptureReadyGate } from "../../infra/providers/chatgpt/captureReadyGate";
 import { mountSidebarInIsolated } from "./sidebarMount";
 
 const INITIAL_SOURCE_SYNC_MAX_ATTEMPTS = 5;
@@ -49,8 +50,16 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
 
   const state = bootstrapSourceSyncState();
   let nextCaptureRetryAt: number | null = null;
+  let nextCaptureReadyRetryAt: number | null = null;
   let captureRetryAttempt = 0;
+  let requestSync = (): void => {};
   let refreshRetry = (): void => {};
+
+  const captureReadyGate = new ChatgptCaptureReadyGate(() => {
+    nextCaptureReadyRetryAt = Date.now();
+    requestSync();
+    refreshRetry();
+  });
 
   const scheduleCaptureRetry = (): void => {
     const attemptIndex = Math.min(
@@ -98,8 +107,15 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
         sendRuntimeMessage,
         postMainMessage,
         targetOrigin: window.location.origin,
-        state
+        state,
+        captureReadyGate
       });
+      if (result === "capture-ready-pending") {
+        nextCaptureReadyRetryAt = Date.now();
+        refreshRetry();
+        return result;
+      }
+      nextCaptureReadyRetryAt = null;
       if (result === "sent" || result === "transition-pending") {
         clearCaptureRetry();
       } else {
@@ -127,7 +143,11 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
     }
   }
 
-  if (initialResult !== "sent" && initialResult !== "transition-pending") {
+  if (
+    initialResult !== "sent" &&
+    initialResult !== "transition-pending" &&
+    initialResult !== "capture-ready-pending"
+  ) {
     console.warn("initial-source-sync-before-sidebar-exhausted", {
       result: initialResult,
       attempts: INITIAL_SOURCE_SYNC_MAX_ATTEMPTS
@@ -146,6 +166,11 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
       let nextRetryAt: number | null = nextCaptureRetryAt;
       const now = Date.now();
       const pendingMessageIds = new Set<string>();
+      if (nextCaptureReadyRetryAt !== null) {
+        nextRetryAt = nextRetryAt === null
+          ? nextCaptureReadyRetryAt
+          : Math.min(nextRetryAt, nextCaptureReadyRetryAt);
+      }
       if (state.transitionRetryAt !== null) {
         nextRetryAt = nextRetryAt === null
           ? state.transitionRetryAt
@@ -179,6 +204,7 @@ export async function bootstrapIsolatedCapture(): Promise<CaptureResult> {
     }
   });
 
+  requestSync = syncLoop.requestSync;
   refreshRetry = syncLoop.refreshRetry;
 
   return initialResult;

@@ -409,7 +409,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--mh-text-muted);
 }
 
@@ -420,39 +420,7 @@
 
 .mh-count-divider {
   color: var(--mh-border);
-  font-size: 11px;
-}
-
-.mh-sync-group {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.mh-sync-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.mh-sync-dot-ok {
-  background-color: var(--mh-sync-ok);
-}
-
-.mh-sync-dot-loading {
-  background-color: var(--mh-sync-loading);
-}
-
-.mh-sync-dot-error {
-  background-color: var(--mh-sync-error);
-}
-
-.mh-sync-text {
-  font-size: 10px;
-  color: var(--mh-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  font-size: 12px;
 }
 
 .mh-scroll-btn-group {

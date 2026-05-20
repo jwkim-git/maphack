@@ -52,8 +52,7 @@ import {
 export function createCaptureConversationRequest(
   requestId: string,
   source: RuntimeConversationSource,
-  captureMode: RuntimeCaptureMode,
-  assistantGenerating: boolean
+  captureMode: RuntimeCaptureMode
 ): CaptureConversationRequest {
   return {
     type: CAPTURE_CONVERSATION_REQUEST_TYPE,
@@ -61,8 +60,7 @@ export function createCaptureConversationRequest(
     schema: RUNTIME_MESSAGE_SCHEMA,
     requestId,
     captureMode,
-    source,
-    assistantGenerating
+    source
   };
 }
 
@@ -285,8 +283,7 @@ export function createApplyTimestampsFailure(
 export function createSourceUpdatedEvent(
   conversationId: string,
   sourceRevision: number,
-  backgroundSessionId: string,
-  assistantGenerating: boolean
+  backgroundSessionId: string
 ): SourceUpdatedEvent {
   return {
     type: SOURCE_UPDATED_EVENT_TYPE,
@@ -294,8 +291,7 @@ export function createSourceUpdatedEvent(
     schema: RUNTIME_MESSAGE_SCHEMA,
     conversationId,
     sourceRevision,
-    backgroundSessionId,
-    assistantGenerating
+    backgroundSessionId
   };
 }
 
